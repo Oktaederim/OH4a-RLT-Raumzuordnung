@@ -174,7 +174,11 @@
               </tr>
             </thead>
             <tbody id="tbody">
-              <tr><td colspan="8" class="small" style="padding:14px;">Keine Treffer. (Datei laden oder Filter anpassen.)</td></tr>
+              <tr>
+                <td colspan="8" class="small" style="padding:14px;">
+                  Keine Treffer. (Datei laden oder Filter anpassen.)
+                </td>
+              </tr>
             </tbody>
           </table>
         </div>
@@ -190,6 +194,7 @@
   <script type="module">
     import * as XLSX from "https://cdn.jsdelivr.net/npm/xlsx@0.19.3/+esm";
 
+    // Erwartete Versorgungsarten (aus deiner Excel-Struktur)
     const SERVICE_DEFS = [
       { key: "Zuluft_allgemein", label: "Zuluft allgemein" },
       { key: "Zuluft_gekühlt",   label: "Zuluft gekühlt" },
@@ -215,12 +220,13 @@
     }
 
     function normalizeHeader(h){
+      // trim entfernt z.B. "Fassade " (mit Leerzeichen am Ende)
       return String(h ?? "").trim().replace(/\s+/g, " ");
     }
 
     function toStr(v){
       if (v === null || v === undefined) return "";
-      if (typeof v === "number") return String(v);
+      if (typeof v === "number") return String(v); // 2.6 bleibt 2.6
       return String(v).trim();
     }
 
@@ -228,14 +234,29 @@
       return Array.from(new Set(arr.filter(Boolean))).sort((a,b) => a.localeCompare(b, "de"));
     }
 
+    function escapeHtml(s){
+      return String(s ?? "")
+        .replaceAll("&","&amp;")
+        .replaceAll("<","&lt;")
+        .replaceAll(">","&gt;")
+        .replaceAll('"',"&quot;")
+        .replaceAll("'","&#039;");
+    }
+
     function buildServiceColumns(headers){
+      // findet z.B. "NW_Zuluft_allgemein", "SO_Abluft_belastet.1" etc.
       const map = [];
       for (const area of AREAS){
         for (const def of SERVICE_DEFS){
           const base = `${area}_${def.key}`;
           if (headers.includes(base)) map.push({ header: base, area, luftart: def.label });
-          const dup = `${base}.1`;
-          if (headers.includes(dup)) map.push({ header: dup, area, luftart: def.label });
+
+          // Duplikate werden bei uns als .1, .2 ... benannt
+          let i = 1;
+          while (headers.includes(`${base}.${i}`)){
+            map.push({ header: `${base}.${i}`, area, luftart: def.label });
+            i++;
+          }
         }
       }
       return map;
@@ -254,38 +275,8 @@
         o.textContent = v;
         selectEl.appendChild(o);
       }
-      // versuche vorherige Auswahl beizubehalten
       if ([...selectEl.options].some(o => o.value === cur)) selectEl.value = cur;
       else selectEl.value = "Alle";
-    }
-
-    function applyFilters(){
-      let rows = state.flatRows.slice();
-      const f = state.filters;
-
-      if (f.anlage.trim()){
-        const needle = f.anlage.trim();
-        rows = rows.filter(r => toStr(r.Anlage).includes(needle));
-      }
-      if (f.text.trim()){
-        const n = f.text.trim().toLowerCase();
-        rows = rows.filter(r => {
-          const hay = [r.Raumnummer, r.RaumAlt, r.Raumbeschreibung, r.Raumnutzungsart].map(toStr).join(" ").toLowerCase();
-          return hay.includes(n);
-        });
-      }
-      if (f.etage !== "Alle") rows = rows.filter(r => r.Etage === f.etage);
-      if (f.fassade !== "Alle") rows = rows.filter(r => r.Fassade === f.fassade);
-      if (f.nutzung !== "Alle") rows = rows.filter(r => r.Raumnutzungsart === f.nutzung);
-      if (f.bereich !== "Alle") rows = rows.filter(r => r.Bereich === f.bereich);
-      if (f.luftart !== "Alle") rows = rows.filter(r => r.Luftart === f.luftart);
-
-      state.filtered = rows;
-      renderTable();
-      updateCounts();
-
-      $("btn_pdf").disabled = state.filtered.length === 0;
-      $("btn_reset").disabled = state.flatRows.length === 0;
     }
 
     function updateCounts(){
@@ -303,6 +294,7 @@
         tb.appendChild(tr);
         return;
       }
+
       for (const r of state.filtered){
         const tr = document.createElement("tr");
         tr.innerHTML = `
@@ -319,13 +311,34 @@
       }
     }
 
-    function escapeHtml(s){
-      return String(s ?? "")
-        .replaceAll("&","&amp;")
-        .replaceAll("<","&lt;")
-        .replaceAll(">","&gt;")
-        .replaceAll('"',"&quot;")
-        .replaceAll("'","&#039;");
+    function applyFilters(){
+      let rows = state.flatRows.slice();
+      const f = state.filters;
+
+      if (f.anlage.trim()){
+        const needle = f.anlage.trim();
+        rows = rows.filter(r => toStr(r.Anlage).includes(needle));
+      }
+      if (f.text.trim()){
+        const n = f.text.trim().toLowerCase();
+        rows = rows.filter(r => {
+          const hay = [r.Raumnummer, r.RaumAlt, r.Raumbeschreibung, r.Raumnutzungsart]
+            .map(toStr).join(" ").toLowerCase();
+          return hay.includes(n);
+        });
+      }
+      if (f.etage !== "Alle") rows = rows.filter(r => r.Etage === f.etage);
+      if (f.fassade !== "Alle") rows = rows.filter(r => r.Fassade === f.fassade);
+      if (f.nutzung !== "Alle") rows = rows.filter(r => r.Raumnutzungsart === f.nutzung);
+      if (f.bereich !== "Alle") rows = rows.filter(r => r.Bereich === f.bereich);
+      if (f.luftart !== "Alle") rows = rows.filter(r => r.Luftart === f.luftart);
+
+      state.filtered = rows;
+      renderTable();
+      updateCounts();
+
+      $("btn_pdf").disabled = state.filtered.length === 0;
+      $("btn_reset").disabled = state.flatRows.length === 0;
     }
 
     async function handleFile(file){
@@ -334,15 +347,41 @@
         const wb = XLSX.read(buf, { type:"array" });
         const sheetName = wb.SheetNames[0];
         const ws = wb.Sheets[sheetName];
-        const json = XLSX.utils.sheet_to_json(ws, { defval:"", raw:true });
 
-        if (!json.length){
+        // A) Als Array lesen (erste Zeile = Header) -> stabil bei doppelten Spalten
+        const aoa = XLSX.utils.sheet_to_json(ws, { header: 1, defval: "", raw: true });
+        if (!aoa.length || aoa.length < 2){
           setStatus("warn", "Die Tabelle ist leer oder konnte nicht gelesen werden.");
           return;
         }
 
-        const headers = Object.keys(json[0]).map(normalizeHeader);
+        // B) Header stabilisieren: trim + Duplikate automatisch als .1, .2 ...
+        const rawHeaderRow = aoa[0].map(h => normalizeHeader(h));
+        const seen = new Map();
+        const headers = rawHeaderRow.map(h => {
+          const key = h || "";
+          const n = (seen.get(key) || 0);
+          seen.set(key, n + 1);
+          return n === 0 ? key : `${key}.${n}`;
+        });
 
+        // C) Zeilen in Objekte
+        const rows = [];
+        for (let i = 1; i < aoa.length; i++){
+          const arr = aoa[i];
+          if (!arr || arr.every(v => toStr(v) === "")) continue; // komplett leere Zeilen überspringen
+          const obj = {};
+          for (let c = 0; c < headers.length; c++){
+            obj[headers[c]] = arr[c] ?? "";
+          }
+          rows.push(obj);
+        }
+        if (!rows.length){
+          setStatus("warn", "Keine Datenzeilen gefunden.");
+          return;
+        }
+
+        // D) Schlüssel ermitteln (jetzt wirklich zuverlässig)
         const getKey = (candidates) => {
           for (const c of candidates){
             if (headers.includes(c)) return c;
@@ -350,14 +389,14 @@
           return null;
         };
 
-        const kEtage = getKey(["Etage"]);
-        const kFassade = getKey(["Fassade", "Fassade "]); // Leerzeichen-Fallback
+        const kEtage     = getKey(["Etage"]);
+        const kFassade   = getKey(["Fassade"]);
         const kSchacht11 = getKey(["Schacht1.1"]);
         const kSchacht12 = getKey(["Schacht1.2"]);
-        const kRaum = getKey(["Raumnummer"]);
-        const kAlt = getKey(["Raum (ALT)"]);
-        const kBez = getKey(["Raumbeschreibung"]);
-        const kNutz = getKey(["Raumnutzungsart"]);
+        const kRaum      = getKey(["Raumnummer"]);
+        const kAlt       = getKey(["Raum (ALT)"]);
+        const kBez       = getKey(["Raumbeschreibung"]);
+        const kNutz      = getKey(["Raumnutzungsart"]);
 
         const missing = [];
         if (!kEtage) missing.push("Etage");
@@ -368,7 +407,8 @@
         const serviceCols = buildServiceColumns(headers);
         if (serviceCols.length === 0) missing.push("NW_/SO_-Versorgungsspalten");
 
-        const mappedRaw = json.map(row => ({
+        // E) Basisdaten normalisieren
+        const mappedRaw = rows.map(row => ({
           Etage: toStr(row[kEtage]),
           Fassade: toStr(row[kFassade]),
           Schacht11: toStr(row[kSchacht11]),
@@ -380,6 +420,7 @@
           __raw: row
         }));
 
+        // F) Flache Liste: je gefüllter Versorgungsspalte ein Eintrag
         const flat = [];
         for (const r of mappedRaw){
           for (const sc of serviceCols){
@@ -407,13 +448,14 @@
         state.flatRows = flat;
         state.meta = { sourceName:file.name, sheetName, rowCount:mappedRaw.length, flatCount:flat.length };
 
-        // Dropdowns füllen
+        // Dropdowns befüllen
         rebuildSelectOptions($("f_etage"), uniqueSorted(mappedRaw.map(r => r.Etage)));
         rebuildSelectOptions($("f_fassade"), uniqueSorted(mappedRaw.map(r => r.Fassade)));
         rebuildSelectOptions($("f_nutzung"), uniqueSorted(mappedRaw.map(r => r.Raumnutzungsart)));
 
         $("meta").textContent = `Quelle: ${state.meta.sourceName} • Räume: ${state.meta.rowCount} • Versorgungseinträge: ${state.meta.flatCount}`;
 
+        // Status setzen (wichtig: überschreibt "Noch keine Datei geladen.")
         if (missing.length){
           setStatus("warn", "Datei geladen, aber es fehlen/abweichen Spalten: " + missing.join(", "));
         } else {
@@ -506,7 +548,7 @@
 
     $("btn_pdf").addEventListener("click", exportPdf);
 
-    // Start
+    // Startzustand (HTML zeigt bereits "Noch keine Datei geladen.")
     setStatus("warn", "Noch keine Datei geladen.");
   </script>
 </body>
