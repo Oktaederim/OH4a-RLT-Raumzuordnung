@@ -5,25 +5,32 @@
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>RLT Raumzuordnung – Suche & PDF</title>
 
-  <!-- PDF: jsPDF + AutoTable (global) -->
-  <script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.2/dist/jspdf.umd.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/jspdf-autotable@3.8.3/dist/jspdf.plugin.autotable.min.js"></script>
+  <!-- PDF: jsPDF + AutoTable -->
+  <script defer src="https://cdn.jsdelivr.net/npm/jspdf@2.5.2/dist/jspdf.umd.min.js"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/jspdf-autotable@3.8.3/dist/jspdf.plugin.autotable.min.js"></script>
+
+  <!-- XLSX (SheetJS) - Primary -->
+  <script defer src="https://cdn.jsdelivr.net/npm/xlsx@0.19.3/dist/xlsx.full.min.js"></script>
+  <!-- XLSX Fallback (falls jsDelivr blockiert) -->
+  <script>
+    // Wenn jsDelivr blockiert ist, laden wir nachträglich von unpkg nach.
+    window.addEventListener("load", () => {
+      if (!window.XLSX) {
+        const s = document.createElement("script");
+        s.src = "https://unpkg.com/xlsx@0.19.3/dist/xlsx.full.min.js";
+        s.defer = true;
+        s.onload = () => console.log("XLSX via unpkg geladen.");
+        s.onerror = () => console.error("XLSX konnte auch via unpkg nicht geladen werden.");
+        document.head.appendChild(s);
+      }
+    });
+  </script>
 
   <style>
-    /* LIGHT THEME */
     :root{
-      --bg:#f6f8fb;
-      --card:#ffffff;
-      --muted:#526170;
-      --txt:#0f172a;
-      --line:#d8e0ea;
-      --accent:#2563eb;
-      --accent2:#1d4ed8;
-      --warnBg:#fff7e6;
-      --warnLine:#f2c15c;
-      --okBg:#ecfdf5;
-      --okLine:#34d399;
-      --input:#f8fafc;
+      --bg:#f6f8fb; --card:#ffffff; --muted:#526170; --txt:#0f172a; --line:#d8e0ea;
+      --accent:#2563eb; --accent2:#1d4ed8; --warnBg:#fff7e6; --warnLine:#f2c15c;
+      --okBg:#ecfdf5; --okLine:#34d399; --input:#f8fafc;
     }
     *{ box-sizing:border-box; }
     body{ margin:0; font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; background:var(--bg); color:var(--txt); }
@@ -37,23 +44,14 @@
     .card{ background:var(--card); border:1px solid var(--line); border-radius:16px; padding:14px; box-shadow: 0 1px 3px rgba(15,23,42,0.06); }
     label{ display:block; font-size:12px; color:var(--muted); margin:10px 0 6px; }
     input, select, button{
-      width:100%;
-      background:var(--input);
-      color:var(--txt);
-      border:1px solid var(--line);
-      border-radius:12px;
-      padding:10px 10px;
-      outline:none;
+      width:100%; background:var(--input); color:var(--txt); border:1px solid var(--line);
+      border-radius:12px; padding:10px 10px; outline:none;
     }
     input::placeholder{ color:#7b8b9a; }
     .row{ display:grid; grid-template-columns:1fr 1fr; gap:10px; }
     .btnRow{ display:flex; gap:10px; margin-top:12px; flex-wrap:wrap; }
     button{ cursor:pointer; font-weight:700; }
-    button.primary{
-      background: linear-gradient(180deg, var(--accent), var(--accent2));
-      border-color: #1e40af;
-      color:#fff;
-    }
+    button.primary{ background: linear-gradient(180deg, var(--accent), var(--accent2)); border-color:#1e40af; color:#fff; }
     button.ghost{ background:#fff; }
     button:disabled{ opacity:.55; cursor:not-allowed; }
     .hint{ margin-top:8px; color:var(--muted); font-size:12px; line-height:1.35; }
@@ -67,6 +65,8 @@
     th{ color:var(--muted); font-size:12px; font-weight:800; position:sticky; top:0; background:var(--card); }
     td{ font-size:13px; }
     hr{ border:none; border-top:1px solid var(--line); margin:14px 0; }
+    .kpi { display:flex; gap:8px; flex-wrap:wrap; }
+    .kpi .pill { background: #fff; }
   </style>
 </head>
 
@@ -87,7 +87,11 @@
 
     <div class="grid">
       <div class="card">
-        <div id="status" class="warn">Noch keine Datei geladen.</div>
+        <div id="status" class="warn">Start… Bibliotheken werden geprüft…</div>
+
+        <div class="btnRow" style="margin-top:10px;">
+          <button id="btn_selftest" class="ghost">Selbsttest (Bibliotheken prüfen)</button>
+        </div>
 
         <label>Datei (Excel .xlsx)</label>
         <input id="file" type="file" accept=".xlsx,.xls" />
@@ -147,14 +151,16 @@
         </div>
 
         <div class="hint" id="meta"></div>
+        <div class="hint" id="debug" style="margin-top:8px;"></div>
       </div>
 
       <div class="card">
         <div class="toolbar">
           <div>
             <div style="font-weight:900; font-size:14px;">Trefferliste</div>
-            <div class="small">
-              Versorgungseinträge: <b id="cnt_entries">0</b> • Betroffene Räume: <b id="cnt_rooms">0</b>
+            <div class="kpi">
+              <span class="pill">Versorgungseinträge: <b id="cnt_entries">0</b></span>
+              <span class="pill">Betroffene Räume: <b id="cnt_rooms">0</b></span>
             </div>
           </div>
         </div>
@@ -184,17 +190,16 @@
         </div>
 
         <div class="hint" style="margin-top:10px;">
-          Logik: Jede gefüllte Versorgungsspalte wird als eigener Versorgungseintrag geführt (z. B. <span class="mono">SO_Zuluft_gekühlt</span>).
+          Logik: Jede gefüllte Versorgungsspalte wird als eigener Versorgungseintrag geführt (auch bei doppelten Spalten in Excel).
         </div>
       </div>
     </div>
   </div>
 
-  <!-- XLSX als Module (zuverlässig für GitHub Pages) -->
-  <script type="module">
-    import * as XLSX from "https://cdn.jsdelivr.net/npm/xlsx@0.19.3/+esm";
-
-    // Erwartete Versorgungsarten (aus deiner Excel-Struktur)
+  <script>
+    // -----------------------------
+    // Konfiguration (Excel-Spalten)
+    // -----------------------------
     const SERVICE_DEFS = [
       { key: "Zuluft_allgemein", label: "Zuluft allgemein" },
       { key: "Zuluft_gekühlt",   label: "Zuluft gekühlt" },
@@ -203,6 +208,9 @@
     ];
     const AREAS = ["NW", "SO"];
 
+    // -----------------------------
+    // State
+    // -----------------------------
     const state = {
       rawRows: [],
       flatRows: [],
@@ -211,6 +219,9 @@
       filters: { anlage:"", text:"", etage:"Alle", fassade:"Alle", nutzung:"Alle", bereich:"Alle", luftart:"Alle" }
     };
 
+    // -----------------------------
+    // Helpers
+    // -----------------------------
     const $ = (id) => document.getElementById(id);
 
     function setStatus(type, msg){
@@ -219,8 +230,11 @@
       el.textContent = msg;
     }
 
+    function setDebug(msg){
+      $("debug").innerHTML = msg || "";
+    }
+
     function normalizeHeader(h){
-      // trim entfernt z.B. "Fassade " (mit Leerzeichen am Ende)
       return String(h ?? "").trim().replace(/\s+/g, " ");
     }
 
@@ -243,25 +257,6 @@
         .replaceAll("'","&#039;");
     }
 
-    function buildServiceColumns(headers){
-      // findet z.B. "NW_Zuluft_allgemein", "SO_Abluft_belastet.1" etc.
-      const map = [];
-      for (const area of AREAS){
-        for (const def of SERVICE_DEFS){
-          const base = `${area}_${def.key}`;
-          if (headers.includes(base)) map.push({ header: base, area, luftart: def.label });
-
-          // Duplikate werden bei uns als .1, .2 ... benannt
-          let i = 1;
-          while (headers.includes(`${base}.${i}`)){
-            map.push({ header: `${base}.${i}`, area, luftart: def.label });
-            i++;
-          }
-        }
-      }
-      return map;
-    }
-
     function rebuildSelectOptions(selectEl, values){
       const cur = selectEl.value;
       selectEl.innerHTML = "";
@@ -279,6 +274,25 @@
       else selectEl.value = "Alle";
     }
 
+    function buildServiceColumns(headers){
+      // findet z.B. NW_Zuluft_allgemein, NW_Abluft_belastet, NW_Abluft_belastet.1 ...
+      const map = [];
+      for (const area of AREAS){
+        for (const def of SERVICE_DEFS){
+          const base = `${area}_${def.key}`;
+          if (headers.includes(base)) map.push({ header: base, area, luftart: def.label });
+
+          // Duplikate: .1, .2, ...
+          let i = 1;
+          while (headers.includes(`${base}.${i}`)){
+            map.push({ header: `${base}.${i}`, area, luftart: def.label });
+            i++;
+          }
+        }
+      }
+      return map;
+    }
+
     function updateCounts(){
       $("cnt_entries").textContent = String(state.filtered.length);
       const rooms = new Set(state.filtered.map(r => r.Raumnummer));
@@ -294,7 +308,6 @@
         tb.appendChild(tr);
         return;
       }
-
       for (const r of state.filtered){
         const tr = document.createElement("tr");
         tr.innerHTML = `
@@ -334,6 +347,7 @@
       if (f.luftart !== "Alle") rows = rows.filter(r => r.Luftart === f.luftart);
 
       state.filtered = rows;
+
       renderTable();
       updateCounts();
 
@@ -341,21 +355,43 @@
       $("btn_reset").disabled = state.flatRows.length === 0;
     }
 
+    function selfTest(){
+      const okXlsx = !!window.XLSX;
+      const okPdf  = !!(window.jspdf && window.jspdf.jsPDF);
+
+      const msg = [
+        `XLSX: ${okXlsx ? "OK" : "FEHLT"}`,
+        `jsPDF: ${okPdf ? "OK" : "FEHLT"}`
+      ].join(" | ");
+
+      if (okXlsx && okPdf) {
+        setStatus("ok", `Bereit. ${msg}. Bitte Excel-Datei laden.`);
+      } else {
+        setStatus("warn", `Bibliotheken fehlen. ${msg}. Wahrscheinlich blockiert ein Netzwerk/Adblocker das CDN.`);
+      }
+    }
+
     async function handleFile(file){
       try{
+        // Warten, falls XLSX über Fallback erst nachgeladen wurde
+        if (!window.XLSX){
+          setStatus("warn", "XLSX ist noch nicht verfügbar. Bitte 2–3 Sekunden warten und erneut laden oder Selbsttest klicken.");
+          return;
+        }
+
         const buf = await file.arrayBuffer();
         const wb = XLSX.read(buf, { type:"array" });
         const sheetName = wb.SheetNames[0];
         const ws = wb.Sheets[sheetName];
 
-        // A) Als Array lesen (erste Zeile = Header) -> stabil bei doppelten Spalten
+        // Stabil bei doppelten Spalten: als Array lesen
         const aoa = XLSX.utils.sheet_to_json(ws, { header: 1, defval: "", raw: true });
         if (!aoa.length || aoa.length < 2){
           setStatus("warn", "Die Tabelle ist leer oder konnte nicht gelesen werden.");
           return;
         }
 
-        // B) Header stabilisieren: trim + Duplikate automatisch als .1, .2 ...
+        // Header trimmen + Duplikate als .1, .2, ...
         const rawHeaderRow = aoa[0].map(h => normalizeHeader(h));
         const seen = new Map();
         const headers = rawHeaderRow.map(h => {
@@ -365,11 +401,11 @@
           return n === 0 ? key : `${key}.${n}`;
         });
 
-        // C) Zeilen in Objekte
+        // Zeilen -> Objekte
         const rows = [];
         for (let i = 1; i < aoa.length; i++){
           const arr = aoa[i];
-          if (!arr || arr.every(v => toStr(v) === "")) continue; // komplett leere Zeilen überspringen
+          if (!arr || arr.every(v => toStr(v) === "")) continue;
           const obj = {};
           for (let c = 0; c < headers.length; c++){
             obj[headers[c]] = arr[c] ?? "";
@@ -381,22 +417,17 @@
           return;
         }
 
-        // D) Schlüssel ermitteln (jetzt wirklich zuverlässig)
-        const getKey = (candidates) => {
-          for (const c of candidates){
-            if (headers.includes(c)) return c;
-          }
-          return null;
-        };
+        // Key Finder
+        const getKey = (cands) => cands.find(c => headers.includes(c)) || null;
 
-        const kEtage     = getKey(["Etage"]);
-        const kFassade   = getKey(["Fassade"]);
-        const kSchacht11 = getKey(["Schacht1.1"]);
-        const kSchacht12 = getKey(["Schacht1.2"]);
-        const kRaum      = getKey(["Raumnummer"]);
-        const kAlt       = getKey(["Raum (ALT)"]);
-        const kBez       = getKey(["Raumbeschreibung"]);
-        const kNutz      = getKey(["Raumnutzungsart"]);
+        const kEtage   = getKey(["Etage"]);
+        const kFassade = getKey(["Fassade"]);     // wird aus "Fassade " korrekt
+        const kSch11   = getKey(["Schacht1.1"]);
+        const kSch12   = getKey(["Schacht1.2"]);
+        const kRaum    = getKey(["Raumnummer"]);
+        const kAlt     = getKey(["Raum (ALT)"]);
+        const kBez     = getKey(["Raumbeschreibung"]);
+        const kNutz    = getKey(["Raumnutzungsart"]);
 
         const missing = [];
         if (!kEtage) missing.push("Etage");
@@ -407,12 +438,11 @@
         const serviceCols = buildServiceColumns(headers);
         if (serviceCols.length === 0) missing.push("NW_/SO_-Versorgungsspalten");
 
-        // E) Basisdaten normalisieren
         const mappedRaw = rows.map(row => ({
           Etage: toStr(row[kEtage]),
           Fassade: toStr(row[kFassade]),
-          Schacht11: toStr(row[kSchacht11]),
-          Schacht12: toStr(row[kSchacht12]),
+          Schacht11: toStr(row[kSch11]),
+          Schacht12: toStr(row[kSch12]),
           Raumnummer: toStr(row[kRaum]),
           RaumAlt: toStr(row[kAlt]),
           Raumbeschreibung: toStr(row[kBez]),
@@ -420,7 +450,7 @@
           __raw: row
         }));
 
-        // F) Flache Liste: je gefüllter Versorgungsspalte ein Eintrag
+        // flach
         const flat = [];
         for (const r of mappedRaw){
           for (const sc of serviceCols){
@@ -429,8 +459,6 @@
               flat.push({
                 Etage: r.Etage,
                 Fassade: r.Fassade,
-                Schacht11: r.Schacht11,
-                Schacht12: r.Schacht12,
                 Raumnummer: r.Raumnummer,
                 RaumAlt: r.RaumAlt,
                 Raumbeschreibung: r.Raumbeschreibung,
@@ -448,16 +476,23 @@
         state.flatRows = flat;
         state.meta = { sourceName:file.name, sheetName, rowCount:mappedRaw.length, flatCount:flat.length };
 
-        // Dropdowns befüllen
         rebuildSelectOptions($("f_etage"), uniqueSorted(mappedRaw.map(r => r.Etage)));
         rebuildSelectOptions($("f_fassade"), uniqueSorted(mappedRaw.map(r => r.Fassade)));
         rebuildSelectOptions($("f_nutzung"), uniqueSorted(mappedRaw.map(r => r.Raumnutzungsart)));
 
-        $("meta").textContent = `Quelle: ${state.meta.sourceName} • Räume: ${state.meta.rowCount} • Versorgungseinträge: ${state.meta.flatCount}`;
+        $("meta").textContent =
+          `Quelle: ${state.meta.sourceName} • Blatt: ${state.meta.sheetName} • Räume: ${state.meta.rowCount} • Versorgungseinträge: ${state.meta.flatCount}`;
 
-        // Status setzen (wichtig: überschreibt "Noch keine Datei geladen.")
+        setDebug(
+          `<span class="mono">Debug:</span> Service-Spalten erkannt: <b>${serviceCols.length}</b> • ` +
+          `Flat-Einträge erzeugt: <b>${flat.length}</b>` +
+          (serviceCols.length ? ` (z. B. <span class="mono">${escapeHtml(serviceCols[0].header)}</span>)` : "")
+        );
+
         if (missing.length){
           setStatus("warn", "Datei geladen, aber es fehlen/abweichen Spalten: " + missing.join(", "));
+        } else if (flat.length === 0) {
+          setStatus("warn", "Datei geladen, aber es wurden 0 Versorgungseinträge gefunden. (Sind die Anlagen-Spalten leer?)");
         } else {
           setStatus("ok", `Datei geladen: ${file.name} – ${mappedRaw.length} Räume / ${flat.length} Versorgungseinträge.`);
         }
@@ -471,6 +506,11 @@
     }
 
     function exportPdf(){
+      if (!(window.jspdf && window.jspdf.jsPDF)) {
+        setStatus("warn", "jsPDF ist nicht verfügbar (CDN blockiert?).");
+        return;
+      }
+
       const { jsPDF } = window.jspdf;
       const doc = new jsPDF({ orientation:"landscape", unit:"pt", format:"a4" });
 
@@ -520,7 +560,16 @@
       doc.save(`${safeName}_Treffer_${now.toISOString().slice(0,10)}.pdf`);
     }
 
-    // Events
+    // -----------------------------
+    // Events / Init
+    // -----------------------------
+    window.addEventListener("load", () => {
+      // Status erst nach load: dann sind defer-scripte geladen (oder nicht)
+      selfTest();
+    });
+
+    $("btn_selftest").addEventListener("click", selfTest);
+
     $("file").addEventListener("change", (e) => {
       const f = e.target.files?.[0];
       if (f) handleFile(f);
@@ -547,9 +596,6 @@
     });
 
     $("btn_pdf").addEventListener("click", exportPdf);
-
-    // Startzustand (HTML zeigt bereits "Noch keine Datei geladen.")
-    setStatus("warn", "Noch keine Datei geladen.");
   </script>
 </body>
 </html>
