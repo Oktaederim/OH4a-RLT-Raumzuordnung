@@ -1,0 +1,542 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>RLT Raumzuordnung – Suche & PDF</title>
+
+  <!-- React (ohne Build) -->
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <!-- Babel für JSX (für GitHub Pages ok; bei sehr großen Apps später Build nutzen) -->
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+  <!-- Excel: SheetJS -->
+  <script src="https://cdn.jsdelivr.net/npm/xlsx@0.19.3/dist/xlsx.full.min.js"></script>
+
+  <!-- PDF: jsPDF + AutoTable -->
+  <script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.2/dist/jspdf.umd.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/jspdf-autotable@3.8.3/dist/jspdf.plugin.autotable.min.js"></script>
+
+  <style>
+    :root { --bg:#0b0f14; --card:#111826; --muted:#9aa4b2; --txt:#e6edf3; --line:#223047; --accent:#5aa7ff; }
+    * { box-sizing: border-box; }
+    body { margin:0; font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; background: var(--bg); color: var(--txt); }
+    a { color: var(--accent); }
+    .wrap { max-width: 1200px; margin: 0 auto; padding: 20px; }
+    .topbar { display:flex; gap:12px; align-items:flex-start; justify-content:space-between; flex-wrap:wrap; }
+    .title h1 { margin:0; font-size: 20px; }
+    .title p { margin:6px 0 0; color: var(--muted); font-size: 13px; max-width: 900px; }
+    .card { background: var(--card); border: 1px solid var(--line); border-radius: 16px; padding: 14px; }
+    .grid { display:grid; grid-template-columns: 360px 1fr; gap: 14px; margin-top: 14px; }
+    @media (max-width: 980px){ .grid { grid-template-columns: 1fr; } }
+    label { display:block; font-size: 12px; color: var(--muted); margin: 10px 0 6px; }
+    input, select, button {
+      width: 100%;
+      background:#0d1320;
+      color: var(--txt);
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 10px 10px;
+      outline: none;
+    }
+    input::placeholder { color:#6b778a; }
+    .row { display:grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+    .btnRow { display:flex; gap: 10px; margin-top: 12px; flex-wrap: wrap; }
+    button { cursor:pointer; font-weight: 600; }
+    button.primary { background: linear-gradient(180deg, #1b3a66, #132744); border-color: #2b4e83; }
+    button.ghost { background: transparent; }
+    button:disabled { opacity: 0.5; cursor: not-allowed; }
+    .hint { margin-top: 8px; color: var(--muted); font-size: 12px; line-height: 1.35; }
+    .pill { display:inline-flex; align-items:center; gap:8px; padding: 6px 10px; border: 1px solid var(--line); border-radius: 999px; color: var(--muted); font-size: 12px; }
+    table { width:100%; border-collapse: collapse; }
+    th, td { text-align:left; padding: 10px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
+    th { color: var(--muted); font-size: 12px; font-weight: 700; position: sticky; top: 0; background: var(--card); }
+    td { font-size: 13px; }
+    .toolbar { display:flex; align-items:center; justify-content:space-between; gap:10px; flex-wrap:wrap; margin-bottom:10px; }
+    .small { font-size: 12px; color: var(--muted); }
+    .warn { border-left: 4px solid #ffcc66; padding: 10px 12px; background:#2a2212; color:#ffe3a3; border-radius: 12px; }
+    .ok { border-left: 4px solid #55d18c; padding: 10px 12px; background:#13251c; color:#c9f5dc; border-radius: 12px; }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace; }
+  </style>
+</head>
+
+<body>
+  <div class="wrap">
+    <div class="topbar">
+      <div class="title">
+        <h1>RLT Raumzuordnung – Suche & PDF-Export</h1>
+        <p>
+          Excel laden → nach Anlage/Raum/Luftart/Bereich/Fassade filtern → Trefferliste als PDF exportieren.
+          Läuft komplett lokal im Browser (ideal für Störfall-/Wartungsanalyse).
+        </p>
+      </div>
+      <div class="pill">
+        <span>GitHub Pages geeignet</span>
+        <span class="mono">•</span>
+        <span>ohne Backend</span>
+      </div>
+    </div>
+
+    <div id="app"></div>
+  </div>
+
+<script type="text/babel">
+const { useEffect, useMemo, useState } = React;
+
+function normalizeHeader(h) {
+  return String(h ?? "")
+    .trim()
+    .replace(/\s+/g, " ");
+}
+
+function toStr(v) {
+  if (v === null || v === undefined) return "";
+  // Zahlen wie 2.6 sollen als "2.6" erhalten bleiben
+  if (typeof v === "number") return String(v);
+  return String(v).trim();
+}
+
+// Erwartete „Service“-Spalten (deine Datei hat NW_... und SO_... inkl. .1)
+const SERVICE_DEFS = [
+  { key: "Zuluft_allgemein", label: "Zuluft allgemein" },
+  { key: "Zuluft_gekühlt",   label: "Zuluft gekühlt" },
+  { key: "Abluft_belastet",  label: "Abluft belastet" },
+  { key: "Abluft_unbelastet",label: "Abluft unbelastet" },
+];
+
+const AREAS = ["NW", "SO"];
+
+function buildServiceColumns(headers) {
+  // Findet Spalten wie "NW_Zuluft_allgemein", "NW_Abluft_belastet.1" etc.
+  const map = [];
+  for (const area of AREAS) {
+    for (const def of SERVICE_DEFS) {
+      // Grundspalte
+      const base = `${area}_${def.key}`;
+      const baseIdx = headers.findIndex(h => h === base);
+      if (baseIdx >= 0) map.push({ header: base, area, luftart: def.label });
+
+      // Duplikatspalte ".1" (in deiner Datei existiert das v. a. bei Abluft-Spalten)
+      const dup = `${base}.1`;
+      const dupIdx = headers.findIndex(h => h === dup);
+      if (dupIdx >= 0) map.push({ header: dup, area, luftart: def.label });
+    }
+  }
+  return map;
+}
+
+function uniqueSorted(arr) {
+  return Array.from(new Set(arr.filter(Boolean))).sort((a,b) => a.localeCompare(b, "de"));
+}
+
+function App() {
+  const [rawRows, setRawRows] = useState([]);
+  const [flatRows, setFlatRows] = useState([]); // pro Service-Eintrag eine Zeile
+  const [status, setStatus] = useState({ type: "warn", msg: "Noch keine Datei geladen." });
+
+  const [filters, setFilters] = useState({
+    anlage: "",
+    text: "",
+    etage: "Alle",
+    fassade: "Alle",
+    nutzung: "Alle",
+    bereich: "Alle",
+    luftart: "Alle",
+  });
+
+  const [meta, setMeta] = useState({
+    sourceName: "",
+    sheetName: "",
+    rowCount: 0,
+    flatCount: 0,
+    detectedHeaders: [],
+    missing: [],
+  });
+
+  const etagen = useMemo(() => uniqueSorted(rawRows.map(r => r.Etage)), [rawRows]);
+  const fassaden = useMemo(() => uniqueSorted(rawRows.map(r => r.Fassade)), [rawRows]);
+  const nutzungen = useMemo(() => uniqueSorted(rawRows.map(r => r.Raumnutzungsart)), [rawRows]);
+
+  const filtered = useMemo(() => {
+    let rows = flatRows;
+
+    const f = filters;
+
+    if (f.anlage.trim()) {
+      const needle = f.anlage.trim();
+      rows = rows.filter(r => toStr(r.Anlage).includes(needle));
+    }
+
+    if (f.text.trim()) {
+      const n = f.text.trim().toLowerCase();
+      rows = rows.filter(r => {
+        const hay = [
+          r.Raumnummer, r.RaumAlt, r.Raumbeschreibung, r.Raumnutzungsart
+        ].map(toStr).join(" ").toLowerCase();
+        return hay.includes(n);
+      });
+    }
+
+    if (f.etage !== "Alle") rows = rows.filter(r => r.Etage === f.etage);
+    if (f.fassade !== "Alle") rows = rows.filter(r => r.Fassade === f.fassade);
+    if (f.nutzung !== "Alle") rows = rows.filter(r => r.Raumnutzungsart === f.nutzung);
+    if (f.bereich !== "Alle") rows = rows.filter(r => r.Bereich === f.bereich);
+    if (f.luftart !== "Alle") rows = rows.filter(r => r.Luftart === f.luftart);
+
+    return rows;
+  }, [flatRows, filters]);
+
+  const uniqueRoomsCount = useMemo(() => {
+    const set = new Set(filtered.map(r => r.Raumnummer));
+    return set.size;
+  }, [filtered]);
+
+  function resetFilters() {
+    setFilters({
+      anlage: "",
+      text: "",
+      etage: "Alle",
+      fassade: "Alle",
+      nutzung: "Alle",
+      bereich: "Alle",
+      luftart: "Alle",
+    });
+  }
+
+  async function handleFile(file) {
+    try {
+      const buf = await file.arrayBuffer();
+      const wb = XLSX.read(buf, { type: "array" });
+      const sheetName = wb.SheetNames[0];
+      const ws = wb.Sheets[sheetName];
+
+      // JSON: header aus erster Zeile
+      const json = XLSX.utils.sheet_to_json(ws, { defval: "", raw: true });
+
+      if (!json.length) {
+        setStatus({ type: "warn", msg: "Die Tabelle ist leer oder konnte nicht gelesen werden." });
+        return;
+      }
+
+      // Header normalisieren (SheetJS liefert keys aus Kopfzeile)
+      const headers = Object.keys(json[0]).map(normalizeHeader);
+
+      // Wir remappen jede Zeile auf erwartete Basisfelder (mit robustem Fallback)
+      const getKey = (candidates) => {
+        for (const c of candidates) {
+          const idx = headers.findIndex(h => h === c);
+          if (idx >= 0) return c;
+        }
+        return null;
+      };
+
+      const kEtage = getKey(["Etage"]);
+      const kFassade = getKey(["Fassade", "Fassade "]); // deine Datei hat "Fassade " (mit Leerzeichen)
+      const kSchacht11 = getKey(["Schacht1.1"]);
+      const kSchacht12 = getKey(["Schacht1.2"]);
+      const kRaum = getKey(["Raumnummer"]);
+      const kAlt = getKey(["Raum (ALT)"]);
+      const kBez = getKey(["Raumbeschreibung"]);
+      const kNutz = getKey(["Raumnutzungsart"]);
+
+      const baseMissing = [];
+      if (!kEtage) baseMissing.push("Etage");
+      if (!kFassade) baseMissing.push("Fassade");
+      if (!kRaum) baseMissing.push("Raumnummer");
+      if (!kBez) baseMissing.push("Raumbeschreibung");
+
+      const serviceCols = buildServiceColumns(headers);
+      if (serviceCols.length === 0) baseMissing.push("NW_/SO_-Versorgungsspalten");
+
+      const mappedRaw = json.map(row => {
+        // row keys sind original; wir greifen über candidates (die original keys) zu.
+        const obj = {
+          Etage: toStr(row[kEtage]),
+          Fassade: toStr(row[kFassade]),
+          Schacht11: toStr(row[kSchacht11]),
+          Schacht12: toStr(row[kSchacht12]),
+          Raumnummer: toStr(row[kRaum]),
+          RaumAlt: toStr(row[kAlt]),
+          Raumbeschreibung: toStr(row[kBez]),
+          Raumnutzungsart: toStr(row[kNutz]),
+          __raw: row
+        };
+        return obj;
+      });
+
+      // Flache Liste: je gefüllte Versorgungsspalte ein Eintrag
+      const flat = [];
+      for (const r of mappedRaw) {
+        for (const sc of serviceCols) {
+          const val = r.__raw[sc.header];
+          const anlage = toStr(val);
+          if (anlage) {
+            flat.push({
+              Etage: r.Etage,
+              Fassade: r.Fassade,
+              Schacht11: r.Schacht11,
+              Schacht12: r.Schacht12,
+              Raumnummer: r.Raumnummer,
+              RaumAlt: r.RaumAlt,
+              Raumbeschreibung: r.Raumbeschreibung,
+              Raumnutzungsart: r.Raumnutzungsart,
+              Bereich: sc.area,
+              Luftart: sc.luftart,
+              Anlage: anlage,
+              QuelleSpalte: sc.header
+            });
+          }
+        }
+      }
+
+      setRawRows(mappedRaw);
+      setFlatRows(flat);
+      setMeta({
+        sourceName: file.name,
+        sheetName,
+        rowCount: mappedRaw.length,
+        flatCount: flat.length,
+        detectedHeaders: headers,
+        missing: baseMissing
+      });
+
+      if (baseMissing.length) {
+        setStatus({
+          type: "warn",
+          msg: "Datei geladen, aber es fehlen/abweichen Spalten: " + baseMissing.join(", ") +
+               ". Prüfe die Kopfzeilen oder passe die App an."
+        });
+      } else {
+        setStatus({
+          type: "ok",
+          msg: `Datei geladen: ${file.name} – ${mappedRaw.length} Räume / ${flat.length} Versorgungseinträge.`
+        });
+      }
+
+    } catch (e) {
+      console.error(e);
+      setStatus({ type: "warn", msg: "Fehler beim Lesen der Datei: " + (e?.message ?? String(e)) });
+    }
+  }
+
+  function exportPdf() {
+    const { jsPDF } = window.jspdf;
+    const doc = new jsPDF({ orientation: "landscape", unit: "pt", format: "a4" });
+
+    const now = new Date();
+    const dt = now.toLocaleString("de-DE");
+
+    const f = filters;
+    const filterLine = [
+      f.anlage ? `Anlage=${f.anlage}` : null,
+      f.text ? `Text="${f.text}"` : null,
+      f.etage !== "Alle" ? `Etage=${f.etage}` : null,
+      f.fassade !== "Alle" ? `Fassade=${f.fassade}` : null,
+      f.nutzung !== "Alle" ? `Nutzung=${f.nutzung}` : null,
+      f.bereich !== "Alle" ? `Bereich=${f.bereich}` : null,
+      f.luftart !== "Alle" ? `Luftart=${f.luftart}` : null,
+    ].filter(Boolean).join(" | ") || "keine Filter (alle Daten)";
+
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(14);
+    doc.text("RLT Raumzuordnung – Trefferliste", 40, 40);
+
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(10);
+    doc.text(`Quelle: ${meta.sourceName || "-"} | Blatt: ${meta.sheetName || "-"} | Export: ${dt}`, 40, 58);
+    doc.text(`Filter: ${filterLine}`, 40, 74);
+    doc.text(`Treffer: ${filtered.length} Versorgungseinträge | Betroffene Räume: ${uniqueRoomsCount}`, 40, 90);
+
+    const head = [[
+      "Etage", "Raum", "Beschreibung", "Fassade", "Bereich", "Luftart", "Anlage", "Nutzung"
+    ]];
+
+    const body = filtered.map(r => ([
+      r.Etage,
+      r.Raumnummer,
+      r.Raumbeschreibung,
+      r.Fassade,
+      r.Bereich,
+      r.Luftart,
+      r.Anlage,
+      r.Raumnutzungsart
+    ]));
+
+    doc.autoTable({
+      head,
+      body,
+      startY: 110,
+      styles: { font: "helvetica", fontSize: 8, cellPadding: 4 },
+      headStyles: { fillColor: [17, 24, 38] },
+      alternateRowStyles: { fillColor: [13, 19, 32] },
+      margin: { left: 40, right: 40 }
+    });
+
+    const safeName = (meta.sourceName || "raumzuordnung")
+      .replace(/\.[^.]+$/, "")
+      .replace(/[^a-z0-9_-]+/gi, "_");
+
+    doc.save(`${safeName}_Treffer_${now.toISOString().slice(0,10)}.pdf`);
+  }
+
+  return (
+    <div className="grid">
+      <div className="card">
+        <div className={status.type === "ok" ? "ok" : "warn"}>
+          {status.msg}
+        </div>
+
+        <label>Datei (Excel .xlsx)</label>
+        <input
+          type="file"
+          accept=".xlsx,.xls"
+          onChange={(e) => e.target.files?.[0] && handleFile(e.target.files[0])}
+        />
+
+        <div className="hint">
+          Hinweis: Die Datei wird nur lokal im Browser verarbeitet. Ideal für Störfallanalyse (z. B. „Anlage 2.6 gestört“ → betroffene Räume).
+        </div>
+
+        <hr style={{ border: "none", borderTop: "1px solid var(--line)", margin: "14px 0" }} />
+
+        <h3 style={{ margin: "0 0 10px", fontSize: 14 }}>Suchmasken</h3>
+
+        <label>Anlage (z. B. 1.3 / 2.6)</label>
+        <input
+          value={filters.anlage}
+          placeholder="Anlagennummer eingeben…"
+          onChange={(e) => setFilters({ ...filters, anlage: e.target.value })}
+        />
+
+        <label>Freitext (Raum / Alt-Raum / Beschreibung / Nutzung)</label>
+        <input
+          value={filters.text}
+          placeholder="z. B. CP-E1-104 oder FTIR oder Labor…"
+          onChange={(e) => setFilters({ ...filters, text: e.target.value })}
+        />
+
+        <div className="row">
+          <div>
+            <label>Etage</label>
+            <select value={filters.etage} onChange={(e) => setFilters({ ...filters, etage: e.target.value })}>
+              <option>Alle</option>
+              {etagen.map(v => <option key={v} value={v}>{v}</option>)}
+            </select>
+          </div>
+          <div>
+            <label>Fassade</label>
+            <select value={filters.fassade} onChange={(e) => setFilters({ ...filters, fassade: e.target.value })}>
+              <option>Alle</option>
+              {fassaden.map(v => <option key={v} value={v}>{v}</option>)}
+            </select>
+          </div>
+        </div>
+
+        <div className="row">
+          <div>
+            <label>Bereich</label>
+            <select value={filters.bereich} onChange={(e) => setFilters({ ...filters, bereich: e.target.value })}>
+              <option>Alle</option>
+              <option>NW</option>
+              <option>SO</option>
+            </select>
+          </div>
+          <div>
+            <label>Luftart</label>
+            <select value={filters.luftart} onChange={(e) => setFilters({ ...filters, luftart: e.target.value })}>
+              <option>Alle</option>
+              {SERVICE_DEFS.map(s => <option key={s.key} value={s.label}>{s.label}</option>)}
+            </select>
+          </div>
+        </div>
+
+        <label>Raumnutzungsart</label>
+        <select value={filters.nutzung} onChange={(e) => setFilters({ ...filters, nutzung: e.target.value })}>
+          <option>Alle</option>
+          {nutzungen.map(v => <option key={v} value={v}>{v}</option>)}
+        </select>
+
+        <div className="btnRow">
+          <button className="ghost" onClick={resetFilters} disabled={!flatRows.length}>
+            Filter zurücksetzen
+          </button>
+          <button className="primary" onClick={exportPdf} disabled={!filtered.length}>
+            Treffer als PDF herunterladen
+          </button>
+        </div>
+
+        <div className="hint">
+          PDF exportiert die aktuell sichtbaren Treffer. Tipp: Für „Anlage gestört“ nur die Anlagennummer eintragen.
+          Für „Labor hat Problem“ Freitext (Raum/Bezeichnung) nutzen, optional Luftart/Bereich ergänzen.
+        </div>
+
+        {!!meta.sourceName && (
+          <div className="hint" style={{ marginTop: 12 }}>
+            <div><span className="mono">Quelle:</span> {meta.sourceName}</div>
+            <div><span className="mono">Räume:</span> {meta.rowCount} • <span className="mono">Versorgungseinträge:</span> {meta.flatCount}</div>
+          </div>
+        )}
+      </div>
+
+      <div className="card">
+        <div className="toolbar">
+          <div>
+            <div style={{ fontWeight: 800, fontSize: 14 }}>Trefferliste</div>
+            <div className="small">
+              Versorgungseinträge: <b>{filtered.length}</b> • Betroffene Räume: <b>{uniqueRoomsCount}</b>
+            </div>
+          </div>
+        </div>
+
+        <div style={{ overflow: "auto", maxHeight: "70vh", borderRadius: 12 }}>
+          <table>
+            <thead>
+              <tr>
+                <th>Etage</th>
+                <th>Raum</th>
+                <th>Beschreibung</th>
+                <th>Fassade</th>
+                <th>Bereich</th>
+                <th>Luftart</th>
+                <th>Anlage</th>
+                <th>Nutzung</th>
+              </tr>
+            </thead>
+            <tbody>
+              {filtered.map((r, i) => (
+                <tr key={i}>
+                  <td>{r.Etage}</td>
+                  <td className="mono">{r.Raumnummer}</td>
+                  <td>{r.Raumbeschreibung}</td>
+                  <td className="mono">{r.Fassade}</td>
+                  <td className="mono">{r.Bereich}</td>
+                  <td>{r.Luftart}</td>
+                  <td className="mono">{r.Anlage}</td>
+                  <td>{r.Raumnutzungsart}</td>
+                </tr>
+              ))}
+              {!filtered.length && (
+                <tr>
+                  <td colSpan="8" className="small" style={{ padding: 14 }}>
+                    Keine Treffer. (Datei laden oder Filter anpassen.)
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+
+        <div className="hint" style={{ marginTop: 10 }}>
+          Fachlogik: Jede gefüllte Versorgungsspalte (z. B. <span className="mono">SO_Zuluft_gekühlt</span>) wird als eigener Versorgungseintrag geführt.
+          Dadurch ist die Auswertung „Welche Räume hängen an Anlage X?“ und „Welche Anlagen versorgen Raum Y?“ eindeutig und schnell filterbar.
+        </div>
+      </div>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("app")).render(<App />);
+</script>
+</body>
+</html>
