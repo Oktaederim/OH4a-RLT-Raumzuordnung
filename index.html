@@ -8,7 +8,7 @@
   <!-- Tailwind (helles UI) -->
   <script src="https://cdn.tailwindcss.com"></script>
 
-  <!-- XLSX (SheetJS) – wie in deinem funktionierenden Beispiel -->
+  <!-- XLSX (SheetJS) – cdnjs (bei dir lauffähig) -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 
   <!-- jsPDF + AutoTable (cdnjs) -->
@@ -53,8 +53,11 @@
       </div>
 
       <div>
-        <label class="block text-sm font-medium text-gray-700 mb-1">2) Anlage</label>
-        <input id="f_anlage" type="text" placeholder="z. B. 1.3 oder 2.6"
+        <label class="block text-sm font-medium text-gray-700 mb-1">
+          2) Anlage(n)
+          <span class="text-xs text-gray-500 font-normal">(z. B. <span class="font-mono">1.6 1.7</span> oder <span class="font-mono">1.6,1.7</span>)</span>
+        </label>
+        <input id="f_anlage" type="text" placeholder="Anlagen eingeben…"
           class="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500"
           disabled>
       </div>
@@ -117,12 +120,29 @@
         </select>
       </div>
 
-      <div class="lg:col-span-4 flex flex-wrap gap-2 mt-2">
+      <!-- Ansicht Umschalter -->
+      <div class="lg:col-span-4 flex flex-wrap items-center gap-2 mt-2">
         <button id="btnReset"
           class="bg-white hover:bg-gray-50 border border-gray-300 text-gray-800 font-semibold py-2 px-4 rounded-lg shadow-sm transition disabled:bg-gray-100 disabled:cursor-not-allowed"
           disabled>
           Filter zurücksetzen
         </button>
+
+        <div class="flex items-center gap-3 ml-2">
+          <span class="text-sm text-gray-700 font-semibold">Ansicht:</span>
+
+          <label class="inline-flex items-center gap-2 text-sm">
+            <input type="radio" name="viewMode" value="flat" id="view_flat" checked
+              class="accent-blue-600" disabled>
+            <span>Versorgungseinträge</span>
+          </label>
+
+          <label class="inline-flex items-center gap-2 text-sm">
+            <input type="radio" name="viewMode" value="rooms" id="view_rooms"
+              class="accent-blue-600" disabled>
+            <span>Räume gruppiert</span>
+          </label>
+        </div>
 
         <div class="ml-auto text-sm text-gray-600 flex gap-4 items-center">
           <span>Versorgungseinträge: <b id="cnt_entries">0</b></span>
@@ -133,7 +153,8 @@
 
     <!-- Results -->
     <div class="overflow-auto rounded-lg border border-gray-200 bg-white">
-      <table class="min-w-full divide-y divide-gray-200">
+      <!-- Flat table -->
+      <table id="table_flat" class="min-w-full divide-y divide-gray-200">
         <thead class="bg-gray-50">
           <tr>
             <th class="px-4 py-2 text-left text-xs font-semibold text-gray-600 uppercase">Etage</th>
@@ -146,8 +167,25 @@
             <th class="px-4 py-2 text-left text-xs font-semibold text-gray-600 uppercase">Nutzung</th>
           </tr>
         </thead>
-        <tbody id="tbody" class="divide-y divide-gray-200">
+        <tbody id="tbody_flat" class="divide-y divide-gray-200">
           <tr><td colspan="8" class="px-4 py-6 text-center text-gray-500">Keine Daten geladen.</td></tr>
+        </tbody>
+      </table>
+
+      <!-- Rooms grouped table -->
+      <table id="table_rooms" class="min-w-full divide-y divide-gray-200 hidden">
+        <thead class="bg-gray-50">
+          <tr>
+            <th class="px-4 py-2 text-left text-xs font-semibold text-gray-600 uppercase">Etage</th>
+            <th class="px-4 py-2 text-left text-xs font-semibold text-gray-600 uppercase">Raum</th>
+            <th class="px-4 py-2 text-left text-xs font-semibold text-gray-600 uppercase">Beschreibung</th>
+            <th class="px-4 py-2 text-left text-xs font-semibold text-gray-600 uppercase">Fassade</th>
+            <th class="px-4 py-2 text-left text-xs font-semibold text-gray-600 uppercase">Nutzung</th>
+            <th class="px-4 py-2 text-left text-xs font-semibold text-gray-600 uppercase">Versorgung (Bereich → Luftart → Anlagen)</th>
+          </tr>
+        </thead>
+        <tbody id="tbody_rooms" class="divide-y divide-gray-200">
+          <tr><td colspan="6" class="px-4 py-6 text-center text-gray-500">Keine Daten geladen.</td></tr>
         </tbody>
       </table>
     </div>
@@ -169,8 +207,10 @@
   const state = {
     mappedRaw: [],
     flat: [],
-    filtered: [],
+    filteredFlat: [],
+    filteredRooms: [],
     meta: { fileName:"", sheetName:"", roomCount:0, flatCount:0 },
+    viewMode: "flat",
     filters: { anlage:"", text:"", etage:"Alle", fassade:"Alle", bereich:"Alle", luftart:"Alle", nutzung:"Alle" }
   };
 
@@ -178,10 +218,10 @@
   const $ = (id) => document.getElementById(id);
   const elStatus = $("status");
   const elMeta = $("meta");
-  const elTbody = $("tbody");
+  const elTbodyFlat = $("tbody_flat");
+  const elTbodyRooms = $("tbody_rooms");
 
   function setStatus(kind, text){
-    // kind: "warn" | "ok" | "err"
     if (kind === "ok") {
       elStatus.className = "mb-4 p-3 rounded-lg border bg-green-50 border-green-200 text-green-900";
     } else if (kind === "err") {
@@ -193,30 +233,23 @@
   }
 
   function enableControls(){
-    ["f_anlage","f_text","f_etage","f_fassade","f_bereich","f_luftart","f_nutzung","btnReset","btnPdf"]
+    ["f_anlage","f_text","f_etage","f_fassade","f_bereich","f_luftart","f_nutzung","btnReset","btnPdf","view_flat","view_rooms"]
       .forEach(id => $(id).disabled = false);
   }
-
   function disableControls(){
-    ["f_anlage","f_text","f_etage","f_fassade","f_bereich","f_luftart","f_nutzung","btnReset","btnPdf"]
+    ["f_anlage","f_text","f_etage","f_fassade","f_bereich","f_luftart","f_nutzung","btnReset","btnPdf","view_flat","view_rooms"]
       .forEach(id => $(id).disabled = true);
   }
 
-  function normalizeHeader(h){
-    return String(h ?? "").trim().replace(/\s+/g, " ");
+  function normalizeHeader(h){ return String(h ?? "").trim().replace(/\s+/g, " "); }
+  function toStr(v){ if (v === null || v === undefined) return ""; if (typeof v === "number") return String(v); return String(v).trim(); }
+  function escapeHtml(s){
+    return String(s ?? "")
+      .replaceAll("&","&amp;").replaceAll("<","&lt;").replaceAll(">","&gt;")
+      .replaceAll('"',"&quot;").replaceAll("'","&#039;");
   }
+  function uniqSorted(arr){ return Array.from(new Set(arr.filter(Boolean))).sort((a,b)=>a.localeCompare(b,"de",{numeric:true})); }
 
-  function toStr(v){
-    if (v === null || v === undefined) return "";
-    if (typeof v === "number") return String(v);
-    return String(v).trim();
-  }
-
-  function uniqSorted(arr){
-    return Array.from(new Set(arr.filter(Boolean))).sort((a,b)=>a.localeCompare(b,"de",{numeric:true}));
-  }
-
-  // Header-Handling: Duplikate -> .1, .2 ...
   function buildStableHeaders(headerRow){
     const seen = new Map();
     return headerRow.map(hRaw => {
@@ -253,14 +286,30 @@
     sel.value = [...sel.options].some(o => o.value === cur) ? cur : "Alle";
   }
 
+  // ====== NEU: Multi-Anlagen-Parsing ======
+  function parseAnlageQuery(text){
+    // erlaubt: "1.6 1.7" / "1.6,1.7" / "1.6; 1.7" / "1.6|1.7"
+    const raw = String(text || "").trim();
+    if (!raw) return [];
+    return raw
+      .split(/[\s,;|]+/g)
+      .map(s => s.trim())
+      .filter(Boolean);
+  }
+
   function applyFilters(){
     let rows = state.flat.slice();
     const f = state.filters;
 
-    if (f.anlage.trim()){
-      const needle = f.anlage.trim();
-      rows = rows.filter(r => toStr(r.Anlage).includes(needle));
+    // Anlagen-Filter: OR (wenn mindestens eine Anlage vorkommt)
+    const anlagen = parseAnlageQuery(f.anlage);
+    if (anlagen.length){
+      rows = rows.filter(r => {
+        const val = toStr(r.Anlage);
+        return anlagen.some(a => val.includes(a));
+      });
     }
+
     if (f.text.trim()){
       const n = f.text.trim().toLowerCase();
       rows = rows.filter(r => {
@@ -276,27 +325,89 @@
     if (f.luftart !== "Alle") rows = rows.filter(r => r.Luftart === f.luftart);
     if (f.nutzung !== "Alle") rows = rows.filter(r => r.Raumnutzungsart === f.nutzung);
 
-    state.filtered = rows;
-    renderTable();
+    state.filteredFlat = rows;
+
+    // Gruppiert nach Raum erzeugen
+    state.filteredRooms = groupByRoom(state.filteredFlat);
+
+    render();
     updateCounters();
 
-    $("btnPdf").disabled = state.filtered.length === 0;
+    $("btnPdf").disabled = (state.viewMode === "flat")
+      ? state.filteredFlat.length === 0
+      : state.filteredRooms.length === 0;
+  }
+
+  function groupByRoom(flatRows){
+    // Key: Etage|Raum|Fassade|Nutzung|Beschreibung
+    const map = new Map();
+
+    for (const r of flatRows){
+      const key = [
+        toStr(r.Etage),
+        toStr(r.Raumnummer),
+        toStr(r.Fassade),
+        toStr(r.Raumnutzungsart),
+        toStr(r.Raumbeschreibung)
+      ].join("|");
+
+      if (!map.has(key)){
+        map.set(key, {
+          Etage: r.Etage,
+          Raumnummer: r.Raumnummer,
+          Raumbeschreibung: r.Raumbeschreibung,
+          Fassade: r.Fassade,
+          Raumnutzungsart: r.Raumnutzungsart,
+          // Versorgung: Bereich -> Luftart -> Set(Anlagen)
+          Versorgung: { NW: {}, SO: {} }
+        });
+      }
+      const obj = map.get(key);
+      if (!obj.Versorgung[r.Bereich][r.Luftart]) obj.Versorgung[r.Bereich][r.Luftart] = new Set();
+      obj.Versorgung[r.Bereich][r.Luftart].add(toStr(r.Anlage));
+    }
+
+    // Sortierung: Etage, Raum (natürlich), dann Fassade
+    const out = Array.from(map.values());
+    out.sort((a,b) => {
+      const ea = String(a.Etage||"");
+      const eb = String(b.Etage||"");
+      const c1 = ea.localeCompare(eb,"de",{numeric:true});
+      if (c1) return c1;
+      const c2 = String(a.Raumnummer||"").localeCompare(String(b.Raumnummer||""),"de",{numeric:true});
+      if (c2) return c2;
+      return String(a.Fassade||"").localeCompare(String(b.Fassade||""),"de",{numeric:true});
+    });
+    return out;
   }
 
   function updateCounters(){
-    $("cnt_entries").textContent = String(state.filtered.length);
-    const rooms = new Set(state.filtered.map(r => r.Raumnummer));
+    $("cnt_entries").textContent = String(state.filteredFlat.length);
+    const rooms = new Set(state.filteredFlat.map(r => r.Raumnummer));
     $("cnt_rooms").textContent = String(rooms.size);
   }
 
-  function renderTable(){
-    elTbody.innerHTML = "";
-    if (!state.filtered.length){
-      elTbody.innerHTML = `<tr><td colspan="8" class="px-4 py-6 text-center text-gray-500">Keine Treffer.</td></tr>`;
+  function render(){
+    // Tabellen umschalten
+    if (state.viewMode === "flat"){
+      $("table_flat").classList.remove("hidden");
+      $("table_rooms").classList.add("hidden");
+      renderFlat();
+    } else {
+      $("table_flat").classList.add("hidden");
+      $("table_rooms").classList.remove("hidden");
+      renderRooms();
+    }
+  }
+
+  function renderFlat(){
+    elTbodyFlat.innerHTML = "";
+    if (!state.filteredFlat.length){
+      elTbodyFlat.innerHTML = `<tr><td colspan="8" class="px-4 py-6 text-center text-gray-500">Keine Treffer.</td></tr>`;
       return;
     }
 
-    for (const r of state.filtered){
+    for (const r of state.filteredFlat){
       const tr = document.createElement("tr");
       tr.className = "hover:bg-gray-50";
       tr.innerHTML = `
@@ -309,14 +420,62 @@
         <td class="px-4 py-2 text-sm text-gray-700 font-mono">${escapeHtml(r.Anlage)}</td>
         <td class="px-4 py-2 text-sm text-gray-700">${escapeHtml(r.Raumnutzungsart)}</td>
       `;
-      elTbody.appendChild(tr);
+      elTbodyFlat.appendChild(tr);
     }
   }
 
-  function escapeHtml(s){
-    return String(s ?? "")
-      .replaceAll("&","&amp;").replaceAll("<","&lt;").replaceAll(">","&gt;")
-      .replaceAll('"',"&quot;").replaceAll("'","&#039;");
+  function renderRooms(){
+    elTbodyRooms.innerHTML = "";
+    if (!state.filteredRooms.length){
+      elTbodyRooms.innerHTML = `<tr><td colspan="6" class="px-4 py-6 text-center text-gray-500">Keine Treffer.</td></tr>`;
+      return;
+    }
+
+    for (const room of state.filteredRooms){
+      const tr = document.createElement("tr");
+      tr.className = "hover:bg-gray-50";
+
+      const versorgungHtml = renderVersorgungCell(room.Versorgung);
+
+      tr.innerHTML = `
+        <td class="px-4 py-2 text-sm text-gray-700">${escapeHtml(room.Etage)}</td>
+        <td class="px-4 py-2 text-sm text-gray-700 font-mono">${escapeHtml(room.Raumnummer)}</td>
+        <td class="px-4 py-2 text-sm text-gray-700">${escapeHtml(room.Raumbeschreibung)}</td>
+        <td class="px-4 py-2 text-sm text-gray-700 font-mono">${escapeHtml(room.Fassade)}</td>
+        <td class="px-4 py-2 text-sm text-gray-700">${escapeHtml(room.Raumnutzungsart)}</td>
+        <td class="px-4 py-2 text-sm text-gray-700">${versorgungHtml}</td>
+      `;
+      elTbodyRooms.appendChild(tr);
+    }
+  }
+
+  function renderVersorgungCell(versorgung){
+    // Format: NW: Luftart -> Anlagen; SO: ...
+    const parts = [];
+    for (const area of AREAS){
+      const byAir = versorgung[area] || {};
+      const airKeys = Object.keys(byAir);
+
+      if (!airKeys.length) continue;
+
+      const airParts = airKeys
+        .sort((a,b)=>a.localeCompare(b,"de",{numeric:true}))
+        .map(luftart => {
+          const list = Array.from(byAir[luftart] || []);
+          list.sort((a,b)=>String(a).localeCompare(String(b),"de",{numeric:true}));
+          const chips = list.map(a => `<span class="inline-block px-2 py-0.5 rounded bg-blue-50 border border-blue-100 text-blue-900 font-mono text-xs mr-1 mb-1">${escapeHtml(a)}</span>`).join("");
+          return `<div class="mb-1"><span class="font-semibold">${escapeHtml(luftart)}:</span> ${chips || "<span class='text-gray-500'>–</span>"}</div>`;
+        })
+        .join("");
+
+      parts.push(`
+        <div class="mb-2">
+          <div class="text-xs font-bold text-gray-700 mb-1">${area}</div>
+          ${airParts}
+        </div>
+      `);
+    }
+    return parts.join("") || "<span class='text-gray-500'>Keine Versorgungseinträge</span>";
   }
 
   function resetFilters(){
@@ -364,33 +523,58 @@
     doc.text(`Quelle: ${state.meta.fileName || "-"} | Blatt: ${state.meta.sheetName || "-"} | Export: ${dt}`, 40, 58);
     doc.text(`Filter: ${filterLine}`, 40, 74);
 
-    const rooms = new Set(state.filtered.map(r => r.Raumnummer));
-    doc.text(`Treffer: ${state.filtered.length} Versorgungseinträge | Betroffene Räume: ${rooms.size}`, 40, 90);
+    if (state.viewMode === "flat"){
+      const rooms = new Set(state.filteredFlat.map(r => r.Raumnummer));
+      doc.text(`Ansicht: Versorgungseinträge | Treffer: ${state.filteredFlat.length} | Betroffene Räume: ${rooms.size}`, 40, 90);
 
-    const head = [[ "Etage","Raum","Beschreibung","Fassade","Bereich","Luftart","Anlage","Nutzung" ]];
-    const body = state.filtered.map(r => [r.Etage, r.Raumnummer, r.Raumbeschreibung, r.Fassade, r.Bereich, r.Luftart, r.Anlage, r.Raumnutzungsart]);
+      const head = [[ "Etage","Raum","Beschreibung","Fassade","Bereich","Luftart","Anlage","Nutzung" ]];
+      const body = state.filteredFlat.map(r => [r.Etage, r.Raumnummer, r.Raumbeschreibung, r.Fassade, r.Bereich, r.Luftart, r.Anlage, r.Raumnutzungsart]);
 
-    doc.autoTable({
-      head, body, startY: 110,
-      styles: { font: "helvetica", fontSize: 8, cellPadding: 4 },
-      margin: { left: 40, right: 40 }
-    });
+      doc.autoTable({ head, body, startY: 110, styles: { font:"helvetica", fontSize: 8, cellPadding: 4 }, margin: { left: 40, right: 40 } });
 
-    const safe = (state.meta.fileName || "raumzuordnung")
-      .replace(/\.[^.]+$/, "")
-      .replace(/[^a-z0-9_-]+/gi, "_");
+    } else {
+      doc.text(`Ansicht: Räume gruppiert | Treffer: ${state.filteredRooms.length} Räume`, 40, 90);
 
-    doc.save(`${safe}_Treffer_${now.toISOString().slice(0,10)}.pdf`);
+      const head = [[ "Etage","Raum","Beschreibung","Fassade","Nutzung","Versorgung" ]];
+      const body = state.filteredRooms.map(r => {
+        // Versorgung als Textzeile: NW: Luftart=Anlagen; SO: ...
+        const lines = [];
+        for (const area of AREAS){
+          const byAir = r.Versorgung[area] || {};
+          const airKeys = Object.keys(byAir);
+          if (!airKeys.length) continue;
+
+          const airLine = airKeys.sort((a,b)=>a.localeCompare(b,"de",{numeric:true}))
+            .map(l => {
+              const list = Array.from(byAir[l] || []).sort((a,b)=>String(a).localeCompare(String(b),"de",{numeric:true}));
+              return `${l}: ${list.join(", ")}`;
+            }).join(" | ");
+
+          lines.push(`${area}: ${airLine}`);
+        }
+        return [r.Etage, r.Raumnummer, r.Raumbeschreibung, r.Fassade, r.Raumnutzungsart, lines.join(" / ")];
+      });
+
+      doc.autoTable({
+        head, body, startY: 110,
+        styles: { font:"helvetica", fontSize: 7, cellPadding: 4 },
+        columnStyles: { 5: { cellWidth: 420 } },
+        margin: { left: 40, right: 40 }
+      });
+    }
+
+    const safe = (state.meta.fileName || "raumzuordnung").replace(/\.[^.]+$/, "").replace(/[^a-z0-9_-]+/gi, "_");
+    const mode = state.viewMode === "flat" ? "Versorgung" : "Raeume";
+    doc.save(`${safe}_${mode}_${now.toISOString().slice(0,10)}.pdf`);
   }
 
-  // ====== Datei laden (wie in deinem funktionierenden Beispiel) ======
+  // ====== Datei laden (wie bei deinem funktionierenden Beispiel) ======
   $("file").addEventListener("change", (event) => {
     const file = event.target.files && event.target.files[0];
     if (!file) return;
 
-    // Prüfen ob XLSX wirklich da ist
     if (!window.XLSX){
-      setStatus("err", "XLSX wurde nicht geladen. (cdnjs ist bei dir normal ok – ggf. Browser/Netz blockiert doch?)");
+      setStatus("err", "XLSX wurde nicht geladen (cdnjs blockiert?).");
       return;
     }
 
@@ -413,7 +597,7 @@
           return;
         }
 
-        // Header: entweder erste oder zweite Zeile (wie in deinem Beispiel – robust)
+        // Header robust: erste oder zweite Zeile
         const headerCandidate1 = nonEmpty[0];
         const headerCandidate2 = nonEmpty[1];
         const useFirstAsHeader = headerCandidate1.some(v => typeof v === "string" && String(v).trim().length > 0);
@@ -423,7 +607,6 @@
 
         const headers = buildStableHeaders(headerRow);
 
-        // rows: array of objects
         const rows = dataRows.map(row => {
           const obj = {};
           headers.forEach((h, idx) => obj[h] = row[idx] ?? "");
@@ -441,7 +624,6 @@
 
         const serviceCols = buildServiceColumns(headers);
 
-        // Basisdaten
         state.mappedRaw = rows.map(r => ({
           Etage: toStr(r[kEtage]),
           Fassade: toStr(r[kFassade]),
@@ -452,7 +634,6 @@
           __raw: r
         }));
 
-        // flach
         state.flat = [];
         for (const r of state.mappedRaw){
           for (const sc of serviceCols){
@@ -473,16 +654,9 @@
           }
         }
 
-        state.meta = {
-          fileName: file.name,
-          sheetName,
-          roomCount: state.mappedRaw.length,
-          flatCount: state.flat.length
-        };
-
+        state.meta = { fileName: file.name, sheetName, roomCount: state.mappedRaw.length, flatCount: state.flat.length };
         elMeta.textContent = `Quelle: ${state.meta.fileName} • Blatt: ${state.meta.sheetName} • Räume: ${state.meta.roomCount} • Versorgungseinträge: ${state.meta.flatCount}`;
 
-        // Dropdowns
         populateSelect("f_etage",   uniqSorted(state.mappedRaw.map(r => r.Etage)));
         populateSelect("f_fassade", uniqSorted(state.mappedRaw.map(r => r.Fassade)));
         populateSelect("f_nutzung", uniqSorted(state.mappedRaw.map(r => r.Raumnutzungsart)));
@@ -497,6 +671,10 @@
           setStatus("ok", `Datei geladen: ${file.name} – Räume: ${state.meta.roomCount} / Versorgungseinträge: ${state.meta.flatCount}`);
         }
 
+        // Default Ansicht
+        state.viewMode = "flat";
+        $("view_flat").checked = true;
+
         applyFilters();
 
       } catch(err){
@@ -510,23 +688,36 @@
   });
 
   // ====== Filter Events ======
-  function wireFilter(id, key){
-    $(id).addEventListener("input", e => { state.filters[key] = e.target.value; applyFilters(); });
-  }
   $("f_anlage").addEventListener("input", e => { state.filters.anlage = e.target.value; applyFilters(); });
   $("f_text").addEventListener("input", e => { state.filters.text = e.target.value; applyFilters(); });
 
   ["f_etage","f_fassade","f_bereich","f_luftart","f_nutzung"].forEach(id => {
     $(id).addEventListener("change", e => {
-      const map = {
-        f_etage:"etage", f_fassade:"fassade", f_bereich:"bereich", f_luftart:"luftart", f_nutzung:"nutzung"
-      };
+      const map = { f_etage:"etage", f_fassade:"fassade", f_bereich:"bereich", f_luftart:"luftart", f_nutzung:"nutzung" };
       state.filters[map[id]] = e.target.value;
       applyFilters();
     });
   });
 
-  $("btnReset").addEventListener("click", resetFilters);
+  // Ansicht Umschalter
+  $("view_flat").addEventListener("change", () => {
+    if (!$("view_flat").checked) return;
+    state.viewMode = "flat";
+    render();
+    $("btnPdf").disabled = state.filteredFlat.length === 0;
+  });
+  $("view_rooms").addEventListener("change", () => {
+    if (!$("view_rooms").checked) return;
+    state.viewMode = "rooms";
+    render();
+    $("btnPdf").disabled = state.filteredRooms.length === 0;
+  });
+
+  $("btnReset").addEventListener("click", () => {
+    state.viewMode = state.viewMode || "flat";
+    resetFilters();
+  });
+
   $("btnPdf").addEventListener("click", exportPdf);
 
   // Start
