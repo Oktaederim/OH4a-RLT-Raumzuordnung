@@ -79,7 +79,7 @@
           class="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500"
           disabled>
         <p class="text-xs text-gray-500 mt-1">
-          Mehrere Anlagen = ODER-Suche. Exakt: <span class="font-mono">1.1</span> findet nicht <span class="font-mono">1.11</span>.
+          Exakt: <span class="font-mono">1.1</span> findet nicht <span class="font-mono">1.12</span>. Mehrere Anlagen = ODER-Suche.
         </p>
       </div>
 
@@ -255,13 +255,9 @@
   const elBlocks = $("anlagen_blocks_container");
 
   function setStatus(kind, text){
-    if (kind === "ok") {
-      elStatus.className = "mb-4 p-3 rounded-lg border bg-green-50 border-green-200 text-green-900";
-    } else if (kind === "err") {
-      elStatus.className = "mb-4 p-3 rounded-lg border bg-red-50 border-red-200 text-red-900";
-    } else {
-      elStatus.className = "mb-4 p-3 rounded-lg border bg-yellow-50 border-yellow-200 text-yellow-900";
-    }
+    if (kind === "ok") elStatus.className = "mb-4 p-3 rounded-lg border bg-green-50 border-green-200 text-green-900";
+    else if (kind === "err") elStatus.className = "mb-4 p-3 rounded-lg border bg-red-50 border-red-200 text-red-900";
+    else elStatus.className = "mb-4 p-3 rounded-lg border bg-yellow-50 border-yellow-200 text-yellow-900";
     elStatus.textContent = text;
   }
 
@@ -277,7 +273,7 @@
   }
 
   function normalizeHeader(h){ return String(h ?? "").trim().replace(/\s+/g, " "); }
-  function toStr(v){ if (v === null || v === undefined) return ""; if (typeof v === "number") return String(v); return String(v).trim(); }
+  function toStr(v){ if (v === null || v === undefined) return ""; return String(v).trim(); }
   function escapeHtml(s){
     return String(s ?? "")
       .replaceAll("&","&amp;").replaceAll("<","&lt;").replaceAll(">","&gt;")
@@ -320,29 +316,42 @@
     sel.value = [...sel.options].some(o => o.value === cur) ? cur : "Alle";
   }
 
-  // Mehrere Anlagen möglich (beliebig viele): Trennung per Leerzeichen/Komma/Semikolon/|
+  // Such-Eingabe: beliebig viele Anlagen-Tokens
   function parseAnlageQuery(text){
     const raw = String(text || "").trim();
     if (!raw) return [];
     return raw.split(/[\s,;|]+/g).map(s => s.trim()).filter(Boolean);
   }
 
-  // Exakter Vergleich: 1.1 soll NICHT 1.11 matchen
-  // Regel: Token muss als "Ganzes" vorkommen (Wortgrenzen/Trennzeichen).
-  // Unterstützt z.B. "1.1", "ZU-1.1", "Anlage 1.1", "1.1/Z1" etc.,
-  // aber verhindert "1.11" / "11.1" als Teilstring.
-  function tokenMatchesAnlageValue(token, value){
-    const t = String(token || "").trim();
+  // Zellenwert (Anlage): in Tokens zerlegen.
+  // Wichtig: Trennzeichen sind viele, weil Excel-Zellen oft "1.1, 1.6 / 2.7" o.ä. enthalten.
+  // Ergebnis: exakte Tokens -> "1.1" wird NICHT "1.12".
+  function tokenizeAnlageCell(value){
     const v = String(value || "").trim();
-    if (!t || !v) return false;
+    if (!v) return [];
 
-    // Escape für Regex
-    const esc = t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    // Normalize: Klammern/Label-Wörter entfernen, ohne die Zahlen zu zerstören
+    // (optional, aber hilfreich bei "Anlage 1.1" / "RLT 1.1")
+    const cleaned = v
+      .replace(/\b(anlage|rlt|lüftung|lueftung)\b/gi, " ")
+      .replace(/\s+/g, " ")
+      .trim();
 
-    // "Boundary": links/rechts entweder Anfang/Ende oder ein Nicht-Zeichen aus [A-Za-z0-9_.]
-    // Damit bleibt der Punkt Teil der Anlage und verhindert 1.1 in 1.11.
-    const re = new RegExp(`(^|[^A-Za-z0-9_.])${esc}($|[^A-Za-z0-9_.])`);
-    return re.test(v);
+    // Split auf Trennzeichen (Komma, Slash, Semikolon, Pipe, Zeilenumbruch, Tab)
+    // Punkt bleibt erhalten (wichtig für 1.1)
+    const parts = cleaned.split(/[,\;/\|\n\r\t]+/g)
+      .map(s => s.trim())
+      .filter(Boolean);
+
+    // Zusätzlich: innerhalb jedes Teils noch nach " " splitten (falls "1.1 1.6" in einer Zelle steht)
+    const tokens = [];
+    for (const p of parts){
+      const sub = p.split(/\s+/g).map(x => x.trim()).filter(Boolean);
+      tokens.push(...sub);
+    }
+
+    // final: eindeutige Tokens
+    return Array.from(new Set(tokens));
   }
 
   function sortByEtageRaum(a, b){
@@ -357,12 +366,13 @@
     let rows = state.flat.slice();
     const f = state.filters;
 
-    // Anlagenfilter: exakte Tokens (beliebig viele) als ODER
-    const anlagen = parseAnlageQuery(f.anlage);
-    if (anlagen.length){
+    // Anlagenfilter: EXAKT per Tokenvergleich
+    const queryTokens = parseAnlageQuery(f.anlage);
+    if (queryTokens.length){
       rows = rows.filter(r => {
-        const val = toStr(r.Anlage);
-        return anlagen.some(tok => tokenMatchesAnlageValue(tok, val));
+        const cellTokens = r.AnlageTokens || tokenizeAnlageCell(r.Anlage);
+        // ODER-Suche: wenn irgendein Query-Token exakt in den Zell-Tokens vorkommt
+        return queryTokens.some(q => cellTokens.includes(q));
       });
     }
 
@@ -857,7 +867,7 @@
 
         const serviceCols = buildServiceColumns(headers);
 
-        state.mappedRaw = rows.map(r => ({
+        const mappedRaw = rows.map(r => ({
           Etage: toStr(r[kEtage]),
           Fassade: toStr(r[kFassade]),
           Raumnummer: toStr(r[kRaum]),
@@ -867,12 +877,12 @@
           __raw: r
         }));
 
-        state.flat = [];
-        for (const r of state.mappedRaw){
+        const flat = [];
+        for (const r of mappedRaw){
           for (const sc of serviceCols){
-            const anlage = toStr(r.__raw[sc.header]);
-            if (anlage){
-              state.flat.push({
+            const anlageRaw = toStr(r.__raw[sc.header]);
+            if (anlageRaw){
+              flat.push({
                 Etage: r.Etage,
                 Fassade: r.Fassade,
                 Raumnummer: r.Raumnummer,
@@ -881,24 +891,29 @@
                 Raumnutzungsart: r.Raumnutzungsart,
                 Bereich: sc.area,
                 Luftart: sc.luftart,
-                Anlage: anlage
+                Anlage: anlageRaw,
+                // PRECOMPUTE: Tokens für exakte Suche (schnell + korrekt)
+                AnlageTokens: tokenizeAnlageCell(anlageRaw)
               });
             }
           }
         }
 
-        state.meta = { fileName: file.name, sheetName, roomCount: state.mappedRaw.length, flatCount: state.flat.length };
+        state.mappedRaw = mappedRaw;
+        state.flat = flat;
+
+        state.meta = { fileName: file.name, sheetName, roomCount: mappedRaw.length, flatCount: flat.length };
         elMeta.textContent = `Quelle: ${state.meta.fileName} • Blatt: ${state.meta.sheetName} • Räume: ${state.meta.roomCount} • Versorgungseinträge: ${state.meta.flatCount}`;
 
-        populateSelect("f_etage",   uniqSorted(state.mappedRaw.map(r => r.Etage)));
-        populateSelect("f_fassade", uniqSorted(state.mappedRaw.map(r => r.Fassade)));
-        populateSelect("f_nutzung", uniqSorted(state.mappedRaw.map(r => r.Raumnutzungsart)));
+        populateSelect("f_etage",   uniqSorted(mappedRaw.map(r => r.Etage)));
+        populateSelect("f_fassade", uniqSorted(mappedRaw.map(r => r.Fassade)));
+        populateSelect("f_nutzung", uniqSorted(mappedRaw.map(r => r.Raumnutzungsart)));
 
         enableControls();
 
         if (!serviceCols.length){
           setStatus("warn","Datei geladen, aber keine NW_/SO_-Versorgungsspalten erkannt (Header prüfen).");
-        } else if (!state.flat.length){
+        } else if (!flat.length){
           setStatus("warn","Datei geladen, aber 0 Versorgungseinträge gefunden (Anlagen-Spalten leer?).");
         } else {
           setStatus("ok", `Datei geladen: ${file.name} – Räume: ${state.meta.roomCount} / Versorgungseinträge: ${state.meta.flatCount}`);
@@ -923,7 +938,7 @@
   $("f_anlage").addEventListener("input", e => {
     state.filters.anlage = e.target.value;
 
-    // Mehr als 1 Token => automatisch Anlagen-Blocks (egal ob 2 oder 10)
+    // Bei mehreren Tokens automatisch Anlagen-Blocks (egal ob 2 oder 10)
     const tokens = parseAnlageQuery(state.filters.anlage);
     if (tokens.length >= 2){
       state.viewMode = "anlagen";
@@ -946,7 +961,18 @@
   $("view_rooms").addEventListener("change", () => { if ($("view_rooms").checked){ state.viewMode = "rooms"; render(); } });
   $("view_anlagen").addEventListener("change", () => { if ($("view_anlagen").checked){ state.viewMode = "anlagen"; render(); } });
 
-  $("btnReset").addEventListener("click", resetFilters);
+  $("btnReset").addEventListener("click", () => {
+    state.filters = { anlage:"", text:"", etage:"Alle", fassade:"Alle", bereich:"Alle", luftart:"Alle", nutzung:"Alle" };
+    $("f_anlage").value = "";
+    $("f_text").value = "";
+    $("f_etage").value = "Alle";
+    $("f_fassade").value = "Alle";
+    $("f_bereich").value = "Alle";
+    $("f_luftart").value = "Alle";
+    $("f_nutzung").value = "Alle";
+    applyFilters();
+  });
+
   $("btnPdf").addEventListener("click", exportPdfInternal);
   $("btnPdfUser").addEventListener("click", exportPdfUserReduced);
 
