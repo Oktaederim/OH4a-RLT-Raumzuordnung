@@ -8,7 +8,7 @@
   <!-- Tailwind (helles UI) -->
   <script src="https://cdn.tailwindcss.com"></script>
 
-  <!-- XLSX (SheetJS) – cdnjs (bei dir lauffähig) -->
+  <!-- XLSX (SheetJS) – cdnjs -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 
   <!-- jsPDF + AutoTable (cdnjs) -->
@@ -24,18 +24,36 @@
 <body class="bg-gray-100 text-gray-900 p-4 sm:p-6 md:p-8">
   <div class="max-w-7xl mx-auto bg-white rounded-xl shadow-lg p-6 md:p-8">
 
-    <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 mb-6">
-      <div>
-        <h1 class="text-2xl md:text-3xl font-bold">RLT Raumzuordnung – Suche & PDF</h1>
-        <p class="text-sm text-gray-600 mt-1">
-          Excel laden → filtern nach Anlage/Raum/Luftart/Bereich/Fassade → Trefferliste als PDF exportieren.
-        </p>
+    <div class="flex flex-col gap-3 mb-6">
+      <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3">
+        <div>
+          <h1 class="text-2xl md:text-3xl font-bold">RLT Raumzuordnung – Suche & PDF</h1>
+          <p class="text-sm text-gray-600 mt-1">
+            Excel laden → filtern → Ansicht wählen (Versorgung / Räume / Anlagen) → PDF exportieren.
+          </p>
+        </div>
+
+        <div class="flex flex-wrap gap-2">
+          <button id="btnPdf"
+            class="bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded-lg shadow-md transition disabled:bg-gray-400 disabled:cursor-not-allowed"
+            disabled>
+            PDF (intern)
+          </button>
+
+          <button id="btnPdfUser"
+            class="bg-white hover:bg-gray-50 border border-gray-300 text-gray-900 font-bold py-2 px-4 rounded-lg shadow-sm transition disabled:bg-gray-100 disabled:cursor-not-allowed"
+            disabled>
+            PDF Nutzer (reduziert)
+          </button>
+        </div>
       </div>
-      <button id="btnPdf"
-        class="bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded-lg shadow-md transition disabled:bg-gray-400 disabled:cursor-not-allowed"
-        disabled>
-        PDF herunterladen
-      </button>
+
+      <div class="flex items-center gap-2">
+        <input id="optUserPdfMerge" type="checkbox" class="accent-blue-600" disabled>
+        <label for="optUserPdfMerge" class="text-sm text-gray-700">
+          Nutzer-PDF: pro Raum Versorgung zusammenfassen (Luftarten → Anlagen)
+        </label>
+      </div>
     </div>
 
     <div id="status" class="mb-4 p-3 rounded-lg border bg-yellow-50 border-yellow-200 text-yellow-900">
@@ -55,11 +73,14 @@
       <div>
         <label class="block text-sm font-medium text-gray-700 mb-1">
           2) Anlage(n)
-          <span class="text-xs text-gray-500 font-normal">(z. B. <span class="font-mono">1.6 1.7</span> oder <span class="font-mono">1.6,1.7</span>)</span>
+          <span class="text-xs text-gray-500 font-normal">(mehrere möglich: <span class="font-mono">1.1 1.6 2.7</span> oder <span class="font-mono">1.1,1.6,2.7</span>)</span>
         </label>
         <input id="f_anlage" type="text" placeholder="Anlagen eingeben…"
           class="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500"
           disabled>
+        <p class="text-xs text-gray-500 mt-1">
+          Mehrere Anlagen = ODER-Suche. Exakt: <span class="font-mono">1.1</span> findet nicht <span class="font-mono">1.11</span>.
+        </p>
       </div>
 
       <div>
@@ -142,6 +163,12 @@
               class="accent-blue-600" disabled>
             <span>Räume gruppiert</span>
           </label>
+
+          <label class="inline-flex items-center gap-2 text-sm">
+            <input type="radio" name="viewMode" value="anlagen" id="view_anlagen"
+              class="accent-blue-600" disabled>
+            <span>Anlagen gruppiert</span>
+          </label>
         </div>
 
         <div class="ml-auto text-sm text-gray-600 flex gap-4 items-center">
@@ -188,13 +215,19 @@
           <tr><td colspan="6" class="px-4 py-6 text-center text-gray-500">Keine Daten geladen.</td></tr>
         </tbody>
       </table>
+
+      <!-- Anlagen grouped (blocks) -->
+      <div id="view_anlagen_blocks" class="hidden p-4">
+        <div id="anlagen_blocks_container" class="space-y-4">
+          <div class="text-gray-500 text-center py-8">Keine Daten geladen.</div>
+        </div>
+      </div>
     </div>
 
   </div>
 
 <script>
 (() => {
-  // ====== Fachlogik: Spalten/Versorgungsarten ======
   const SERVICE_DEFS = [
     { key: "Zuluft_allgemein", label: "Zuluft allgemein" },
     { key: "Zuluft_gekühlt",   label: "Zuluft gekühlt" },
@@ -203,23 +236,23 @@
   ];
   const AREAS = ["NW", "SO"];
 
-  // ====== State ======
   const state = {
     mappedRaw: [],
     flat: [],
     filteredFlat: [],
     filteredRooms: [],
+    filteredAnlagenBlocks: [],
     meta: { fileName:"", sheetName:"", roomCount:0, flatCount:0 },
     viewMode: "flat",
     filters: { anlage:"", text:"", etage:"Alle", fassade:"Alle", bereich:"Alle", luftart:"Alle", nutzung:"Alle" }
   };
 
-  // ====== DOM ======
   const $ = (id) => document.getElementById(id);
   const elStatus = $("status");
   const elMeta = $("meta");
   const elTbodyFlat = $("tbody_flat");
   const elTbodyRooms = $("tbody_rooms");
+  const elBlocks = $("anlagen_blocks_container");
 
   function setStatus(kind, text){
     if (kind === "ok") {
@@ -233,11 +266,13 @@
   }
 
   function enableControls(){
-    ["f_anlage","f_text","f_etage","f_fassade","f_bereich","f_luftart","f_nutzung","btnReset","btnPdf","view_flat","view_rooms"]
+    ["f_anlage","f_text","f_etage","f_fassade","f_bereich","f_luftart","f_nutzung",
+     "btnReset","btnPdf","btnPdfUser","view_flat","view_rooms","view_anlagen","optUserPdfMerge"]
       .forEach(id => $(id).disabled = false);
   }
   function disableControls(){
-    ["f_anlage","f_text","f_etage","f_fassade","f_bereich","f_luftart","f_nutzung","btnReset","btnPdf","view_flat","view_rooms"]
+    ["f_anlage","f_text","f_etage","f_fassade","f_bereich","f_luftart","f_nutzung",
+     "btnReset","btnPdf","btnPdfUser","view_flat","view_rooms","view_anlagen","optUserPdfMerge"]
       .forEach(id => $(id).disabled = true);
   }
 
@@ -266,7 +301,6 @@
       for (const def of SERVICE_DEFS){
         const base = `${area}_${def.key}`;
         if (headers.includes(base)) cols.push({ header: base, area, luftart: def.label });
-
         let i = 1;
         while (headers.includes(`${base}.${i}`)){
           cols.push({ header: `${base}.${i}`, area, luftart: def.label });
@@ -286,27 +320,49 @@
     sel.value = [...sel.options].some(o => o.value === cur) ? cur : "Alle";
   }
 
-  // ====== NEU: Multi-Anlagen-Parsing ======
+  // Mehrere Anlagen möglich (beliebig viele): Trennung per Leerzeichen/Komma/Semikolon/|
   function parseAnlageQuery(text){
-    // erlaubt: "1.6 1.7" / "1.6,1.7" / "1.6; 1.7" / "1.6|1.7"
     const raw = String(text || "").trim();
     if (!raw) return [];
-    return raw
-      .split(/[\s,;|]+/g)
-      .map(s => s.trim())
-      .filter(Boolean);
+    return raw.split(/[\s,;|]+/g).map(s => s.trim()).filter(Boolean);
+  }
+
+  // Exakter Vergleich: 1.1 soll NICHT 1.11 matchen
+  // Regel: Token muss als "Ganzes" vorkommen (Wortgrenzen/Trennzeichen).
+  // Unterstützt z.B. "1.1", "ZU-1.1", "Anlage 1.1", "1.1/Z1" etc.,
+  // aber verhindert "1.11" / "11.1" als Teilstring.
+  function tokenMatchesAnlageValue(token, value){
+    const t = String(token || "").trim();
+    const v = String(value || "").trim();
+    if (!t || !v) return false;
+
+    // Escape für Regex
+    const esc = t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+    // "Boundary": links/rechts entweder Anfang/Ende oder ein Nicht-Zeichen aus [A-Za-z0-9_.]
+    // Damit bleibt der Punkt Teil der Anlage und verhindert 1.1 in 1.11.
+    const re = new RegExp(`(^|[^A-Za-z0-9_.])${esc}($|[^A-Za-z0-9_.])`);
+    return re.test(v);
+  }
+
+  function sortByEtageRaum(a, b){
+    const ea = String(a.Etage||"");
+    const eb = String(b.Etage||"");
+    const c1 = ea.localeCompare(eb, "de", { numeric:true });
+    if (c1) return c1;
+    return String(a.Raumnummer||"").localeCompare(String(b.Raumnummer||""), "de", { numeric:true });
   }
 
   function applyFilters(){
     let rows = state.flat.slice();
     const f = state.filters;
 
-    // Anlagen-Filter: OR (wenn mindestens eine Anlage vorkommt)
+    // Anlagenfilter: exakte Tokens (beliebig viele) als ODER
     const anlagen = parseAnlageQuery(f.anlage);
     if (anlagen.length){
       rows = rows.filter(r => {
         const val = toStr(r.Anlage);
-        return anlagen.some(a => val.includes(a));
+        return anlagen.some(tok => tokenMatchesAnlageValue(tok, val));
       });
     }
 
@@ -325,32 +381,28 @@
     if (f.luftart !== "Alle") rows = rows.filter(r => r.Luftart === f.luftart);
     if (f.nutzung !== "Alle") rows = rows.filter(r => r.Raumnutzungsart === f.nutzung);
 
+    rows.sort(sortByEtageRaum);
     state.filteredFlat = rows;
 
-    // Gruppiert nach Raum erzeugen
     state.filteredRooms = groupByRoom(state.filteredFlat);
+    state.filteredAnlagenBlocks = groupByAnlageBlocks(state.filteredFlat);
 
     render();
     updateCounters();
 
-    $("btnPdf").disabled = (state.viewMode === "flat")
-      ? state.filteredFlat.length === 0
-      : state.filteredRooms.length === 0;
+    const hasAny =
+      (state.viewMode === "flat" && state.filteredFlat.length) ||
+      (state.viewMode === "rooms" && state.filteredRooms.length) ||
+      (state.viewMode === "anlagen" && state.filteredAnlagenBlocks.length);
+
+    $("btnPdf").disabled = !hasAny;
+    $("btnPdfUser").disabled = state.filteredFlat.length === 0;
   }
 
   function groupByRoom(flatRows){
-    // Key: Etage|Raum|Fassade|Nutzung|Beschreibung
     const map = new Map();
-
     for (const r of flatRows){
-      const key = [
-        toStr(r.Etage),
-        toStr(r.Raumnummer),
-        toStr(r.Fassade),
-        toStr(r.Raumnutzungsart),
-        toStr(r.Raumbeschreibung)
-      ].join("|");
-
+      const key = [toStr(r.Etage), toStr(r.Raumnummer), toStr(r.Fassade), toStr(r.Raumnutzungsart), toStr(r.Raumbeschreibung)].join("|");
       if (!map.has(key)){
         map.set(key, {
           Etage: r.Etage,
@@ -358,7 +410,6 @@
           Raumbeschreibung: r.Raumbeschreibung,
           Fassade: r.Fassade,
           Raumnutzungsart: r.Raumnutzungsart,
-          // Versorgung: Bereich -> Luftart -> Set(Anlagen)
           Versorgung: { NW: {}, SO: {} }
         });
       }
@@ -366,19 +417,29 @@
       if (!obj.Versorgung[r.Bereich][r.Luftart]) obj.Versorgung[r.Bereich][r.Luftart] = new Set();
       obj.Versorgung[r.Bereich][r.Luftart].add(toStr(r.Anlage));
     }
-
-    // Sortierung: Etage, Raum (natürlich), dann Fassade
     const out = Array.from(map.values());
-    out.sort((a,b) => {
-      const ea = String(a.Etage||"");
-      const eb = String(b.Etage||"");
-      const c1 = ea.localeCompare(eb,"de",{numeric:true});
-      if (c1) return c1;
-      const c2 = String(a.Raumnummer||"").localeCompare(String(b.Raumnummer||""),"de",{numeric:true});
-      if (c2) return c2;
-      return String(a.Fassade||"").localeCompare(String(b.Fassade||""),"de",{numeric:true});
-    });
+    out.sort((a,b) => sortByEtageRaum(a,b));
     return out;
+  }
+
+  function groupByAnlageBlocks(flatRows){
+    const map = new Map();
+    for (const r of flatRows){
+      const key = toStr(r.Anlage) || "Unbekannt";
+      if (!map.has(key)) map.set(key, []);
+      map.get(key).push(r);
+    }
+
+    const keys = Array.from(map.keys()).sort((a,b)=>String(a).localeCompare(String(b), "de", { numeric:true }));
+
+    return keys.map(anlage => {
+      const items = map.get(anlage).slice().sort((a,b) => {
+        const c = sortByEtageRaum(a,b);
+        if (c) return c;
+        return String(a.Luftart||"").localeCompare(String(b.Luftart||""), "de", { numeric:true });
+      });
+      return { Anlage: anlage, items };
+    });
   }
 
   function updateCounters(){
@@ -388,16 +449,13 @@
   }
 
   function render(){
-    // Tabellen umschalten
-    if (state.viewMode === "flat"){
-      $("table_flat").classList.remove("hidden");
-      $("table_rooms").classList.add("hidden");
-      renderFlat();
-    } else {
-      $("table_flat").classList.add("hidden");
-      $("table_rooms").classList.remove("hidden");
-      renderRooms();
-    }
+    $("table_flat").classList.toggle("hidden", state.viewMode !== "flat");
+    $("table_rooms").classList.toggle("hidden", state.viewMode !== "rooms");
+    $("view_anlagen_blocks").classList.toggle("hidden", state.viewMode !== "anlagen");
+
+    if (state.viewMode === "flat") renderFlat();
+    else if (state.viewMode === "rooms") renderRooms();
+    else renderAnlagenBlocks();
   }
 
   function renderFlat(){
@@ -406,7 +464,6 @@
       elTbodyFlat.innerHTML = `<tr><td colspan="8" class="px-4 py-6 text-center text-gray-500">Keine Treffer.</td></tr>`;
       return;
     }
-
     for (const r of state.filteredFlat){
       const tr = document.createElement("tr");
       tr.className = "hover:bg-gray-50";
@@ -434,28 +491,23 @@
     for (const room of state.filteredRooms){
       const tr = document.createElement("tr");
       tr.className = "hover:bg-gray-50";
-
-      const versorgungHtml = renderVersorgungCell(room.Versorgung);
-
       tr.innerHTML = `
         <td class="px-4 py-2 text-sm text-gray-700">${escapeHtml(room.Etage)}</td>
         <td class="px-4 py-2 text-sm text-gray-700 font-mono">${escapeHtml(room.Raumnummer)}</td>
         <td class="px-4 py-2 text-sm text-gray-700">${escapeHtml(room.Raumbeschreibung)}</td>
         <td class="px-4 py-2 text-sm text-gray-700 font-mono">${escapeHtml(room.Fassade)}</td>
         <td class="px-4 py-2 text-sm text-gray-700">${escapeHtml(room.Raumnutzungsart)}</td>
-        <td class="px-4 py-2 text-sm text-gray-700">${versorgungHtml}</td>
+        <td class="px-4 py-2 text-sm text-gray-700">${renderVersorgungCell(room.Versorgung)}</td>
       `;
       elTbodyRooms.appendChild(tr);
     }
   }
 
   function renderVersorgungCell(versorgung){
-    // Format: NW: Luftart -> Anlagen; SO: ...
     const parts = [];
     for (const area of AREAS){
       const byAir = versorgung[area] || {};
       const airKeys = Object.keys(byAir);
-
       if (!airKeys.length) continue;
 
       const airParts = airKeys
@@ -478,6 +530,68 @@
     return parts.join("") || "<span class='text-gray-500'>Keine Versorgungseinträge</span>";
   }
 
+  function renderAnlagenBlocks(){
+    elBlocks.innerHTML = "";
+
+    if (!state.filteredAnlagenBlocks.length){
+      elBlocks.innerHTML = `<div class="text-gray-500 text-center py-8">Keine Treffer.</div>`;
+      return;
+    }
+
+    for (const block of state.filteredAnlagenBlocks){
+      const wrapper = document.createElement("div");
+      wrapper.className = "border border-gray-200 rounded-lg bg-white shadow-sm";
+
+      const header = document.createElement("div");
+      header.className = "px-4 py-3 bg-gray-50 border-b border-gray-200 flex flex-wrap items-center gap-2";
+      header.innerHTML = `
+        <div class="font-bold text-gray-900">Anlage: <span class="font-mono">${escapeHtml(block.Anlage)}</span></div>
+        <div class="text-sm text-gray-600">(${block.items.length} Versorgungseinträge)</div>
+      `;
+      wrapper.appendChild(header);
+
+      const table = document.createElement("table");
+      table.className = "min-w-full divide-y divide-gray-200";
+      table.innerHTML = `
+        <thead class="bg-white">
+          <tr>
+            <th class="px-4 py-2 text-left text-xs font-semibold text-gray-600 uppercase">Etage</th>
+            <th class="px-4 py-2 text-left text-xs font-semibold text-gray-600 uppercase">Raum</th>
+            <th class="px-4 py-2 text-left text-xs font-semibold text-gray-600 uppercase">Beschreibung</th>
+            <th class="px-4 py-2 text-left text-xs font-semibold text-gray-600 uppercase">Fassade</th>
+            <th class="px-4 py-2 text-left text-xs font-semibold text-gray-600 uppercase">Bereich</th>
+            <th class="px-4 py-2 text-left text-xs font-semibold text-gray-600 uppercase">Luftart</th>
+            <th class="px-4 py-2 text-left text-xs font-semibold text-gray-600 uppercase">Nutzung</th>
+          </tr>
+        </thead>
+        <tbody class="divide-y divide-gray-200"></tbody>
+      `;
+
+      const tb = table.querySelector("tbody");
+      for (const r of block.items){
+        const tr = document.createElement("tr");
+        tr.className = "hover:bg-gray-50";
+        tr.innerHTML = `
+          <td class="px-4 py-2 text-sm text-gray-700">${escapeHtml(r.Etage)}</td>
+          <td class="px-4 py-2 text-sm text-gray-700 font-mono">${escapeHtml(r.Raumnummer)}</td>
+          <td class="px-4 py-2 text-sm text-gray-700">${escapeHtml(r.Raumbeschreibung)}</td>
+          <td class="px-4 py-2 text-sm text-gray-700 font-mono">${escapeHtml(r.Fassade)}</td>
+          <td class="px-4 py-2 text-sm text-gray-700 font-mono">${escapeHtml(r.Bereich)}</td>
+          <td class="px-4 py-2 text-sm text-gray-700">${escapeHtml(r.Luftart)}</td>
+          <td class="px-4 py-2 text-sm text-gray-700">${escapeHtml(r.Raumnutzungsart)}</td>
+        `;
+        tb.appendChild(tr);
+      }
+
+      const content = document.createElement("div");
+      content.className = "p-2";
+      content.appendChild(table);
+      wrapper.appendChild(content);
+
+      elBlocks.appendChild(wrapper);
+    }
+  }
+
   function resetFilters(){
     state.filters = { anlage:"", text:"", etage:"Alle", fassade:"Alle", bereich:"Alle", luftart:"Alle", nutzung:"Alle" };
     $("f_anlage").value = "";
@@ -490,13 +604,11 @@
     applyFilters();
   }
 
-  function exportPdf(){
-    const ok = (window.jspdf && window.jspdf.jsPDF);
-    if (!ok){
+  function exportPdfInternal(){
+    if (!(window.jspdf && window.jspdf.jsPDF)){
       setStatus("err","PDF-Bibliothek nicht verfügbar (jsPDF wurde nicht geladen).");
       return;
     }
-
     const { jsPDF } = window.jspdf;
     const doc = new jsPDF({ orientation:"landscape", unit:"pt", format:"a4" });
 
@@ -516,28 +628,31 @@
 
     doc.setFont("helvetica","bold");
     doc.setFontSize(14);
-    doc.text("RLT Raumzuordnung – Trefferliste", 40, 40);
+    doc.text("RLT Raumzuordnung – Trefferliste (intern)", 40, 40);
 
     doc.setFont("helvetica","normal");
     doc.setFontSize(10);
     doc.text(`Quelle: ${state.meta.fileName || "-"} | Blatt: ${state.meta.sheetName || "-"} | Export: ${dt}`, 40, 58);
     doc.text(`Filter: ${filterLine}`, 40, 74);
 
-    if (state.viewMode === "flat"){
-      const rooms = new Set(state.filteredFlat.map(r => r.Raumnummer));
-      doc.text(`Ansicht: Versorgungseinträge | Treffer: ${state.filteredFlat.length} | Betroffene Räume: ${rooms.size}`, 40, 90);
+    if (state.viewMode === "anlagen"){
+      doc.text(`Ansicht: Anlagen gruppiert | Anlagen: ${state.filteredAnlagenBlocks.length}`, 40, 90);
 
-      const head = [[ "Etage","Raum","Beschreibung","Fassade","Bereich","Luftart","Anlage","Nutzung" ]];
-      const body = state.filteredFlat.map(r => [r.Etage, r.Raumnummer, r.Raumbeschreibung, r.Fassade, r.Bereich, r.Luftart, r.Anlage, r.Raumnutzungsart]);
+      const head = [[ "Anlage","Etage","Raum","Beschreibung","Fassade","Bereich","Luftart","Nutzung" ]];
+      const body = [];
+      for (const block of state.filteredAnlagenBlocks){
+        for (const r of block.items){
+          body.push([block.Anlage, r.Etage, r.Raumnummer, r.Raumbeschreibung, r.Fassade, r.Bereich, r.Luftart, r.Raumnutzungsart]);
+        }
+      }
 
       doc.autoTable({ head, body, startY: 110, styles: { font:"helvetica", fontSize: 8, cellPadding: 4 }, margin: { left: 40, right: 40 } });
 
-    } else {
-      doc.text(`Ansicht: Räume gruppiert | Treffer: ${state.filteredRooms.length} Räume`, 40, 90);
+    } else if (state.viewMode === "rooms"){
+      doc.text(`Ansicht: Räume gruppiert | Räume: ${state.filteredRooms.length}`, 40, 90);
 
       const head = [[ "Etage","Raum","Beschreibung","Fassade","Nutzung","Versorgung" ]];
       const body = state.filteredRooms.map(r => {
-        // Versorgung als Textzeile: NW: Luftart=Anlagen; SO: ...
         const lines = [];
         for (const area of AREAS){
           const byAir = r.Versorgung[area] || {};
@@ -561,14 +676,133 @@
         columnStyles: { 5: { cellWidth: 420 } },
         margin: { left: 40, right: 40 }
       });
+
+    } else {
+      const rooms = new Set(state.filteredFlat.map(r => r.Raumnummer));
+      doc.text(`Ansicht: Versorgungseinträge | Treffer: ${state.filteredFlat.length} | Betroffene Räume: ${rooms.size}`, 40, 90);
+
+      const head = [[ "Etage","Raum","Beschreibung","Fassade","Bereich","Luftart","Anlage","Nutzung" ]];
+      const body = state.filteredFlat.map(r => [r.Etage, r.Raumnummer, r.Raumbeschreibung, r.Fassade, r.Bereich, r.Luftart, r.Anlage, r.Raumnutzungsart]);
+
+      doc.autoTable({ head, body, startY: 110, styles: { font:"helvetica", fontSize: 8, cellPadding: 4 }, margin: { left: 40, right: 40 } });
     }
 
     const safe = (state.meta.fileName || "raumzuordnung").replace(/\.[^.]+$/, "").replace(/[^a-z0-9_-]+/gi, "_");
-    const mode = state.viewMode === "flat" ? "Versorgung" : "Raeume";
-    doc.save(`${safe}_${mode}_${now.toISOString().slice(0,10)}.pdf`);
+    const mode = state.viewMode === "flat" ? "Versorgung" : (state.viewMode === "rooms" ? "Raeume" : "Anlagen");
+    doc.save(`${safe}_${mode}_intern_${now.toISOString().slice(0,10)}.pdf`);
   }
 
-  // ====== Datei laden (wie bei deinem funktionierenden Beispiel) ======
+  function exportPdfUserReduced(){
+    if (!(window.jspdf && window.jspdf.jsPDF)){
+      setStatus("err","PDF-Bibliothek nicht verfügbar (jsPDF wurde nicht geladen).");
+      return;
+    }
+    const { jsPDF } = window.jspdf;
+    const doc = new jsPDF({ orientation:"portrait", unit:"pt", format:"a4" });
+
+    const now = new Date();
+    const dt = now.toLocaleString("de-DE");
+
+    doc.setFont("helvetica","bold");
+    doc.setFontSize(14);
+    doc.text("Betroffene Räume – Übersicht (Nutzer)", 40, 40);
+
+    doc.setFont("helvetica","normal");
+    doc.setFontSize(10);
+    doc.text(`Quelle: ${state.meta.fileName || "-"} | Export: ${dt}`, 40, 58);
+
+    const headColor = [225, 225, 225];
+    const headText  = [0, 0, 0];
+
+    const mergeByRoom = !!$("optUserPdfMerge")?.checked;
+
+    if (!mergeByRoom){
+      const blocks = groupByAnlageBlocks(state.filteredFlat);
+
+      let startY = 80;
+      for (const block of blocks){
+        doc.setFont("helvetica","bold");
+        doc.setFontSize(11);
+        doc.text(`Anlage: ${block.Anlage}`, 40, startY);
+        startY += 10;
+
+        const head = [[ "Raum", "Beschreibung", "Fassade", "Luftart" ]];
+
+        const seen = new Set();
+        const body = [];
+        for (const r of block.items){
+          const key = `${r.Raumnummer}|${r.Raumbeschreibung}|${r.Fassade}|${r.Luftart}|${block.Anlage}`;
+          if (seen.has(key)) continue;
+          seen.add(key);
+          body.push([r.Raumnummer, r.Raumbeschreibung, r.Fassade, r.Luftart]);
+        }
+
+        doc.autoTable({
+          head,
+          body,
+          startY: startY + 6,
+          styles: { font: "helvetica", fontSize: 8, cellPadding: 3, textColor: [0,0,0] },
+          headStyles: { fillColor: headColor, textColor: headText, fontStyle: "bold" },
+          alternateRowStyles: { fillColor: [245,245,245] },
+          margin: { left: 40, right: 40 },
+        });
+
+        startY = doc.lastAutoTable.finalY + 18;
+        const pageHeight = doc.internal.pageSize.height;
+        if (startY > pageHeight - 60){
+          doc.addPage();
+          startY = 60;
+        }
+      }
+
+      const safe = (state.meta.fileName || "raumzuordnung").replace(/\.[^.]+$/, "").replace(/[^a-z0-9_-]+/gi, "_");
+      doc.save(`${safe}_Nutzer_Uebersicht_anlagen_${now.toISOString().slice(0,10)}.pdf`);
+      return;
+    }
+
+    // pro Raum eine Zeile: Luftarten -> Anlagen
+    const map = new Map();
+    for (const r of state.filteredFlat){
+      const roomKey = `${r.Raumnummer}|${r.Raumbeschreibung}|${r.Fassade}`;
+      if (!map.has(roomKey)){
+        map.set(roomKey, { raum: r.Raumnummer, bez: r.Raumbeschreibung, fas: r.Fassade, luft: new Map() });
+      }
+      const obj = map.get(roomKey);
+      if (!obj.luft.has(r.Luftart)) obj.luft.set(r.Luftart, new Set());
+      obj.luft.get(r.Luftart).add(String(r.Anlage || "").trim());
+    }
+
+    const rows = Array.from(map.values()).sort((a,b)=>
+      String(a.raum||"").localeCompare(String(b.raum||""), "de", { numeric:true })
+    );
+
+    const head = [[ "Raum", "Beschreibung", "Fassade", "Versorgung (Luftart: Anlagen)" ]];
+    const body = rows.map(x => {
+      const parts = Array.from(x.luft.entries())
+        .sort((a,b)=>String(a[0]).localeCompare(String(b[0]), "de", { numeric:true }))
+        .map(([luftart, set]) => {
+          const list = Array.from(set).filter(Boolean).sort((a,b)=>String(a).localeCompare(String(b),"de",{numeric:true}));
+          return `${luftart}: ${list.join(", ")}`;
+        });
+      return [x.raum, x.bez, x.fas, parts.join(" | ")];
+    });
+
+    doc.autoTable({
+      head,
+      body,
+      startY: 80,
+      styles: { font: "helvetica", fontSize: 8, cellPadding: 3, textColor: [0,0,0] },
+      headStyles: { fillColor: headColor, textColor: headText, fontStyle: "bold" },
+      alternateRowStyles: { fillColor: [245,245,245] },
+      margin: { left: 40, right: 40 },
+      columnStyles: { 3: { cellWidth: 260 } }
+    });
+
+    const safe = (state.meta.fileName || "raumzuordnung").replace(/\.[^.]+$/, "").replace(/[^a-z0-9_-]+/gi, "_");
+    doc.save(`${safe}_Nutzer_Uebersicht_raeume_${now.toISOString().slice(0,10)}.pdf`);
+  }
+
+  // Datei laden
   $("file").addEventListener("change", (event) => {
     const file = event.target.files && event.target.files[0];
     if (!file) return;
@@ -597,7 +831,6 @@
           return;
         }
 
-        // Header robust: erste oder zweite Zeile
         const headerCandidate1 = nonEmpty[0];
         const headerCandidate2 = nonEmpty[1];
         const useFirstAsHeader = headerCandidate1.some(v => typeof v === "string" && String(v).trim().length > 0);
@@ -671,7 +904,6 @@
           setStatus("ok", `Datei geladen: ${file.name} – Räume: ${state.meta.roomCount} / Versorgungseinträge: ${state.meta.flatCount}`);
         }
 
-        // Default Ansicht
         state.viewMode = "flat";
         $("view_flat").checked = true;
 
@@ -687,8 +919,19 @@
     reader.readAsArrayBuffer(file);
   });
 
-  // ====== Filter Events ======
-  $("f_anlage").addEventListener("input", e => { state.filters.anlage = e.target.value; applyFilters(); });
+  // Filter Events
+  $("f_anlage").addEventListener("input", e => {
+    state.filters.anlage = e.target.value;
+
+    // Mehr als 1 Token => automatisch Anlagen-Blocks (egal ob 2 oder 10)
+    const tokens = parseAnlageQuery(state.filters.anlage);
+    if (tokens.length >= 2){
+      state.viewMode = "anlagen";
+      $("view_anlagen").checked = true;
+    }
+    applyFilters();
+  });
+
   $("f_text").addEventListener("input", e => { state.filters.text = e.target.value; applyFilters(); });
 
   ["f_etage","f_fassade","f_bereich","f_luftart","f_nutzung"].forEach(id => {
@@ -699,28 +942,14 @@
     });
   });
 
-  // Ansicht Umschalter
-  $("view_flat").addEventListener("change", () => {
-    if (!$("view_flat").checked) return;
-    state.viewMode = "flat";
-    render();
-    $("btnPdf").disabled = state.filteredFlat.length === 0;
-  });
-  $("view_rooms").addEventListener("change", () => {
-    if (!$("view_rooms").checked) return;
-    state.viewMode = "rooms";
-    render();
-    $("btnPdf").disabled = state.filteredRooms.length === 0;
-  });
+  $("view_flat").addEventListener("change", () => { if ($("view_flat").checked){ state.viewMode = "flat"; render(); } });
+  $("view_rooms").addEventListener("change", () => { if ($("view_rooms").checked){ state.viewMode = "rooms"; render(); } });
+  $("view_anlagen").addEventListener("change", () => { if ($("view_anlagen").checked){ state.viewMode = "anlagen"; render(); } });
 
-  $("btnReset").addEventListener("click", () => {
-    state.viewMode = state.viewMode || "flat";
-    resetFilters();
-  });
+  $("btnReset").addEventListener("click", resetFilters);
+  $("btnPdf").addEventListener("click", exportPdfInternal);
+  $("btnPdfUser").addEventListener("click", exportPdfUserReduced);
 
-  $("btnPdf").addEventListener("click", exportPdf);
-
-  // Start
   disableControls();
   setStatus("warn","Bitte Excel-Datei auswählen…");
 })();
