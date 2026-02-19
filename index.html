@@ -213,18 +213,10 @@
         </tbody>
       </table>
 
-      <!-- Rooms grouped -->
+      <!-- Rooms grouped (HEADER wird dynamisch gebaut -> verhindert doppelte Spalte) -->
       <table id="table_rooms" class="min-w-full divide-y divide-gray-200 hidden">
         <thead class="bg-gray-50">
-          <tr>
-            <th class="px-4 py-2 text-left text-xs font-semibold text-gray-600 uppercase">Etage</th>
-            <th class="px-4 py-2 text-left text-xs font-semibold text-gray-600 uppercase">Raum</th>
-            <th class="px-4 py-2 text-left text-xs font-semibold text-gray-600 uppercase">Beschreibung</th>
-            <th class="px-4 py-2 text-left text-xs font-semibold text-gray-600 uppercase">Fassade</th>
-            <th class="px-4 py-2 text-left text-xs font-semibold text-gray-600 uppercase">Nutzung</th>
-            <th class="px-4 py-2 text-left text-xs font-semibold text-gray-600 uppercase">Versorgung (Bereich → Luftart → Anlagen)</th>
-            <th id="th_rooms_other" class="px-4 py-2 text-left text-xs font-semibold text-gray-600 uppercase hidden">Mitversorgung (Anlage: Luftarten)</th>
-          </tr>
+          <tr id="rooms_head_row"></tr>
         </thead>
         <tbody id="tbody_rooms" class="divide-y divide-gray-200">
           <tr><td colspan="7" class="px-4 py-6 text-center text-gray-500">Keine Daten geladen.</td></tr>
@@ -579,7 +571,18 @@
 
   function renderRooms(){
     const showMit = isMitversorgungEnabled();
-    $("th_rooms_other").classList.toggle("hidden", !showMit);
+
+    // Header IMMER neu aufbauen -> verhindert doppelte Mitversorgungs-Spalte zuverlässig
+    const headRow = document.getElementById("rooms_head_row");
+    headRow.innerHTML = `
+      <th class="px-4 py-2 text-left text-xs font-semibold text-gray-600 uppercase">Etage</th>
+      <th class="px-4 py-2 text-left text-xs font-semibold text-gray-600 uppercase">Raum</th>
+      <th class="px-4 py-2 text-left text-xs font-semibold text-gray-600 uppercase">Beschreibung</th>
+      <th class="px-4 py-2 text-left text-xs font-semibold text-gray-600 uppercase">Fassade</th>
+      <th class="px-4 py-2 text-left text-xs font-semibold text-gray-600 uppercase">Nutzung</th>
+      <th class="px-4 py-2 text-left text-xs font-semibold text-gray-600 uppercase">Versorgung (Bereich → Luftart → Anlagen)</th>
+      ${showMit ? `<th class="px-4 py-2 text-left text-xs font-semibold text-gray-600 uppercase">Mitversorgung (Anlage: Luftarten)</th>` : ``}
+    `;
 
     elTbodyRooms.innerHTML = "";
     if (!state.filteredRooms.length){
