@@ -55,9 +55,9 @@
         <div class="flex items-center gap-2">
           <input id="optShowOtherAnlagen" type="checkbox" class="accent-blue-600" disabled>
           <label for="optShowOtherAnlagen" class="text-sm text-gray-700">
-            Weitere Anlagen je Raum anzeigen (Mitversorgung)
+            Mitversorgung anzeigen (andere Anlagen + Luftart/Bereich je Raum)
           </label>
-          <span class="text-xs text-gray-500">— wirkt in „Räume gruppiert“ und „Anlagen gruppiert“</span>
+          <span class="text-xs text-gray-500">— wird nur aktiv, wenn im Feld „Anlage(n)“ etwas eingegeben ist</span>
         </div>
       </div>
     </div>
@@ -211,7 +211,7 @@
             <th class="px-4 py-2 text-left text-xs font-semibold text-gray-600 uppercase">Fassade</th>
             <th class="px-4 py-2 text-left text-xs font-semibold text-gray-600 uppercase">Nutzung</th>
             <th class="px-4 py-2 text-left text-xs font-semibold text-gray-600 uppercase">Versorgung (Bereich → Luftart → Anlagen)</th>
-            <th id="th_rooms_other" class="px-4 py-2 text-left text-xs font-semibold text-gray-600 uppercase hidden">Weitere Anlagen</th>
+            <th id="th_rooms_other" class="px-4 py-2 text-left text-xs font-semibold text-gray-600 uppercase hidden">Mitversorgung (Anlage: Luftarten)</th>
           </tr>
         </thead>
         <tbody id="tbody_rooms" class="divide-y divide-gray-200">
@@ -248,6 +248,7 @@
     viewMode: "flat",
     filters: { anlage:"", text:"", etage:"Alle", fassade:"Alle", bereich:"Alle", luftart:"Alle", nutzung:"Alle" },
     roomAllAnlagenIndex: new Map(),
+    roomAnlageSupplyIndex: new Map(),
   };
 
   const $ = (id) => document.getElementById(id);
@@ -371,6 +372,25 @@
     return idx;
   }
 
+  function buildRoomAnlageSupplyIndex(flatRows){
+    const idx = new Map();
+    for (const r of flatRows){
+      const rk = roomKeyOf(r);
+      if (!rk) continue;
+      if (!idx.has(rk)) idx.set(rk, new Map());
+      const m = idx.get(rk);
+
+      const tokens = r.AnlageTokens || tokenizeAnlageCell(r.Anlage);
+      const supply = `${r.Luftart} (${r.Bereich})`;
+
+      for (const t of tokens){
+        if (!m.has(t)) m.set(t, new Set());
+        m.get(t).add(supply);
+      }
+    }
+    return idx;
+  }
+
   function getOtherAnlagenForRoom(roomKey, selectedTokens){
     const all = state.roomAllAnlagenIndex.get(roomKey);
     if (!all) return [];
@@ -383,9 +403,41 @@
     return out;
   }
 
-  function renderAnlagenChips(list){
-    if (!list || !list.length) return `<span class="text-gray-400">–</span>`;
-    return list.map(a => `<span class="inline-block px-2 py-0.5 rounded bg-gray-50 border border-gray-200 text-gray-900 font-mono text-xs mr-1 mb-1">${escapeHtml(a)}</span>`).join("");
+  function getOtherSupplyText(roomKey, selectedTokens){
+    if (!selectedTokens || !selectedTokens.length) return "";
+    const other = getOtherAnlagenForRoom(roomKey, selectedTokens);
+    if (!other.length) return "";
+
+    const m = state.roomAnlageSupplyIndex.get(roomKey);
+    if (!m) return other.join(", ");
+
+    const parts = other.map(a => {
+      const set = m.get(a);
+      const list = set ? Array.from(set).sort((x,y)=>String(x).localeCompare(String(y),"de",{numeric:true})) : [];
+      return list.length ? `${a}: ${list.join(", ")}` : `${a}`;
+    });
+    return parts.join(" | ");
+  }
+
+  function renderMitversorgungHtml(roomKey, selectedTokens){
+    const txt = getOtherSupplyText(roomKey, selectedTokens);
+    if (!txt) return `<span class="text-gray-400">–</span>`;
+
+    const blocks = txt.split(" | ").map(chunk => {
+      const [anlage, rest] = chunk.split(": ");
+      if (!rest) return `<div class="mb-1"><span class="font-mono font-semibold">${escapeHtml(anlage)}</span></div>`;
+      return `<div class="mb-1">
+        <span class="font-mono font-semibold">${escapeHtml(anlage)}:</span>
+        <span class="text-gray-700">${escapeHtml(rest)}</span>
+      </div>`;
+    }).join("");
+    return blocks;
+  }
+
+  // ✅ neue Logik: Mitversorgung nur sinnvoll, wenn Anlage(n) eingegeben
+  function canShowMitversorgung(){
+    const hasQuery = parseAnlageQuery(state.filters.anlage).length > 0;
+    return !!$("optShowOtherAnlagen").checked && hasQuery;
   }
 
   function applyFilters(){
@@ -463,9 +515,7 @@
       if (!map.has(key)) map.set(key, []);
       map.get(key).push(r);
     }
-
     const keys = Array.from(map.keys()).sort((a,b)=>String(a).localeCompare(String(b), "de", { numeric:true }));
-
     return keys.map(anlage => {
       const items = map.get(anlage).slice().sort((a,b) => {
         const c = sortByEtageRaum(a,b);
@@ -516,7 +566,7 @@
   }
 
   function renderRooms(){
-    const showOther = !!$("optShowOtherAnlagen").checked;
+    const showOther = canShowMitversorgung();
     $("th_rooms_other").classList.toggle("hidden", !showOther);
 
     elTbodyRooms.innerHTML = "";
@@ -543,8 +593,7 @@
       let otherCell = "";
       if (showOther){
         const rk = roomKeyOf(room);
-        const others = selectedTokens.length ? getOtherAnlagenForRoom(rk, selectedTokens) : [];
-        otherCell = `<td class="px-4 py-2 text-sm text-gray-700">${renderAnlagenChips(others)}</td>`;
+        otherCell = `<td class="px-4 py-2 text-sm text-gray-700">${renderMitversorgungHtml(rk, selectedTokens)}</td>`;
       }
 
       tr.innerHTML = baseCells + otherCell;
@@ -587,7 +636,7 @@
       return;
     }
 
-    const showOther = !!$("optShowOtherAnlagen").checked;
+    const showOther = canShowMitversorgung();
     const selectedTokens = parseAnlageQuery(state.filters.anlage);
 
     for (const block of state.filteredAnlagenBlocks){
@@ -615,7 +664,7 @@
             <th class="px-4 py-2 text-left text-xs font-semibold text-gray-600 uppercase">Bereich</th>
             <th class="px-4 py-2 text-left text-xs font-semibold text-gray-600 uppercase">Luftart</th>
             <th class="px-4 py-2 text-left text-xs font-semibold text-gray-600 uppercase">Nutzung</th>
-            ${showOther ? `<th class="px-4 py-2 text-left text-xs font-semibold text-gray-600 uppercase">Weitere Anlagen</th>` : ``}
+            ${showOther ? `<th class="px-4 py-2 text-left text-xs font-semibold text-gray-600 uppercase">Mitversorgung (Anlage: Luftarten)</th>` : ``}
           </tr>
         </thead>
         <tbody class="divide-y divide-gray-200"></tbody>
@@ -628,9 +677,7 @@
 
         let otherTd = "";
         if (showOther){
-          const rk = roomKeyOf(r);
-          const others = selectedTokens.length ? getOtherAnlagenForRoom(rk, selectedTokens) : [];
-          otherTd = `<td class="px-4 py-2 text-sm text-gray-700">${renderAnlagenChips(others)}</td>`;
+          otherTd = `<td class="px-4 py-2 text-sm text-gray-700">${renderMitversorgungHtml(roomKeyOf(r), selectedTokens)}</td>`;
         }
 
         tr.innerHTML = `
@@ -655,8 +702,6 @@
     }
   }
 
-  // ===== PDF EXPORTS: jetzt inkl. "Weitere Anlagen" wenn Option aktiv =====
-
   function exportPdfInternal(){
     if (!(window.jspdf && window.jspdf.jsPDF)){
       setStatus("err","PDF-Bibliothek nicht verfügbar (jsPDF wurde nicht geladen).");
@@ -667,8 +712,9 @@
 
     const now = new Date();
     const dt = now.toLocaleString("de-DE");
-    const showOther = !!$("optShowOtherAnlagen").checked;
+
     const selectedTokens = parseAnlageQuery(state.filters.anlage);
+    const showOther = canShowMitversorgung();
 
     const f = state.filters;
     const filterLine = [
@@ -696,7 +742,7 @@
 
       const head = [[
         "Anlage","Etage","Raum","Beschreibung","Fassade","Bereich","Luftart","Nutzung",
-        ...(showOther ? ["Weitere Anlagen"] : [])
+        ...(showOther ? ["Mitversorgung (Anlage: Luftarten)"] : [])
       ]];
 
       const body = [];
@@ -704,8 +750,7 @@
         for (const r of block.items){
           const row = [block.Anlage, r.Etage, r.Raumnummer, r.Raumbeschreibung, r.Fassade, r.Bereich, r.Luftart, r.Raumnutzungsart];
           if (showOther){
-            const others = selectedTokens.length ? getOtherAnlagenForRoom(roomKeyOf(r), selectedTokens) : [];
-            row.push(others.join(", "));
+            row.push(getOtherSupplyText(roomKeyOf(r), selectedTokens));
           }
           body.push(row);
         }
@@ -713,8 +758,9 @@
 
       doc.autoTable({
         head, body, startY: 110,
-        styles: { font:"helvetica", fontSize: 8, cellPadding: 4 },
-        margin: { left: 40, right: 40 }
+        styles: { font:"helvetica", fontSize: 7.5, cellPadding: 4 },
+        margin: { left: 40, right: 40 },
+        columnStyles: showOther ? { 8: { cellWidth: 220 } } : {}
       });
 
     } else if (state.viewMode === "rooms"){
@@ -722,7 +768,7 @@
 
       const head = [[
         "Etage","Raum","Beschreibung","Fassade","Nutzung","Versorgung",
-        ...(showOther ? ["Weitere Anlagen"] : [])
+        ...(showOther ? ["Mitversorgung (Anlage: Luftarten)"] : [])
       ]];
 
       const body = state.filteredRooms.map(r => {
@@ -742,10 +788,8 @@
         }
 
         const row = [r.Etage, r.Raumnummer, r.Raumbeschreibung, r.Fassade, r.Raumnutzungsart, lines.join(" / ")];
-
         if (showOther){
-          const others = selectedTokens.length ? getOtherAnlagenForRoom(roomKeyOf(r), selectedTokens) : [];
-          row.push(others.join(", "));
+          row.push(getOtherSupplyText(roomKeyOf(r), selectedTokens));
         }
         return row;
       });
@@ -753,12 +797,13 @@
       doc.autoTable({
         head, body, startY: 110,
         styles: { font:"helvetica", fontSize: 7, cellPadding: 4 },
-        columnStyles: { 5: { cellWidth: showOther ? 360 : 420 }, ...(showOther ? { 6: { cellWidth: 160 } } : {}) },
-        margin: { left: 40, right: 40 }
+        margin: { left: 40, right: 40 },
+        columnStyles: showOther
+          ? { 5: { cellWidth: 320 }, 6: { cellWidth: 220 } }
+          : { 5: { cellWidth: 420 } }
       });
 
     } else {
-      // Flat: bewusst ohne "Weitere Anlagen" (kein pro-Raum-Aggregat)
       const rooms = new Set(state.filteredFlat.map(r => r.Raumnummer));
       doc.text(`Ansicht: Versorgungseinträge | Treffer: ${state.filteredFlat.length} | Betroffene Räume: ${rooms.size}`, 40, 90);
 
@@ -788,8 +833,8 @@
     const headText  = [0, 0, 0];
 
     const mergeByRoom = !!$("optUserPdfMerge")?.checked;
-    const showOther = !!$("optShowOtherAnlagen")?.checked;
     const selectedTokens = parseAnlageQuery(state.filters.anlage);
+    const showOther = canShowMitversorgung();
 
     doc.setFont("helvetica","bold");
     doc.setFontSize(14);
@@ -811,7 +856,7 @@
 
         const head = [[
           "Raum", "Beschreibung", "Fassade", "Luftart",
-          ...(showOther ? ["Weitere Anlagen"] : [])
+          ...(showOther ? ["Mitversorgung (Anlage: Luftarten)"] : [])
         ]];
 
         const seen = new Set();
@@ -824,8 +869,7 @@
           const row = [r.Raumnummer, r.Raumbeschreibung, r.Fassade, r.Luftart];
 
           if (showOther){
-            const others = selectedTokens.length ? getOtherAnlagenForRoom(roomKeyOf(r), selectedTokens) : [];
-            row.push(others.join(", "));
+            row.push(getOtherSupplyText(roomKeyOf(r), selectedTokens));
           }
           body.push(row);
         }
@@ -838,7 +882,7 @@
           headStyles: { fillColor: headColor, textColor: headText, fontStyle: "bold" },
           alternateRowStyles: { fillColor: [245,245,245] },
           margin: { left: 40, right: 40 },
-          columnStyles: showOther ? { 4: { cellWidth: 160 } } : {}
+          columnStyles: showOther ? { 4: { cellWidth: 180 } } : {}
         });
 
         startY = doc.lastAutoTable.finalY + 18;
@@ -854,7 +898,6 @@
       return;
     }
 
-    // pro Raum eine Zeile: Luftarten -> Anlagen (ohne Etage)
     const map = new Map();
     for (const r of state.filteredFlat){
       const roomKey = `${r.Raumnummer}|${r.Raumbeschreibung}|${r.Fassade}`;
@@ -872,7 +915,7 @@
 
     const head = [[
       "Raum", "Beschreibung", "Fassade", "Versorgung (Luftart: Anlagen)",
-      ...(showOther ? ["Weitere Anlagen"] : [])
+      ...(showOther ? ["Mitversorgung (Anlage: Luftarten)"] : [])
     ]];
 
     const body = rows.map(x => {
@@ -886,8 +929,7 @@
       const row = [x.raum, x.bez, x.fas, parts.join(" | ")];
 
       if (showOther){
-        const others = selectedTokens.length ? getOtherAnlagenForRoom(String(x.raum||""), selectedTokens) : [];
-        row.push(others.join(", "));
+        row.push(getOtherSupplyText(String(x.raum||""), selectedTokens));
       }
 
       return row;
@@ -901,17 +943,14 @@
       headStyles: { fillColor: headColor, textColor: headText, fontStyle: "bold" },
       alternateRowStyles: { fillColor: [245,245,245] },
       margin: { left: 40, right: 40 },
-      columnStyles: {
-        3: { cellWidth: showOther ? 230 : 260 },
-        ...(showOther ? { 4: { cellWidth: 130 } } : {})
-      }
+      columnStyles: showOther
+        ? { 3: { cellWidth: 220 }, 4: { cellWidth: 160 } }
+        : { 3: { cellWidth: 260 } }
     });
 
     const safe = (state.meta.fileName || "raumzuordnung").replace(/\.[^.]+$/, "").replace(/[^a-z0-9_-]+/gi, "_");
     doc.save(`${safe}_Nutzer_Uebersicht_raeume_${now.toISOString().slice(0,10)}.pdf`);
   }
-
-  // ===== rest: load + UI events =====
 
   $("file").addEventListener("change", (event) => {
     const file = event.target.files && event.target.files[0];
@@ -1001,6 +1040,7 @@
         state.mappedRaw = mappedRaw;
         state.flat = flat;
         state.roomAllAnlagenIndex = buildRoomAllAnlagenIndex(flat);
+        state.roomAnlageSupplyIndex = buildRoomAnlageSupplyIndex(flat);
 
         state.meta = { fileName: file.name, sheetName, roomCount: mappedRaw.length, flatCount: flat.length };
         elMeta.textContent = `Quelle: ${state.meta.fileName} • Blatt: ${state.meta.sheetName} • Räume: ${state.meta.roomCount} • Versorgungseinträge: ${state.meta.flatCount}`;
@@ -1036,7 +1076,6 @@
 
   $("f_anlage").addEventListener("input", e => {
     state.filters.anlage = e.target.value;
-
     const tokens = parseAnlageQuery(state.filters.anlage);
     if (tokens.length >= 2){
       state.viewMode = "anlagen";
@@ -1056,7 +1095,6 @@
   });
 
   $("optShowOtherAnlagen").addEventListener("change", () => render());
-
   $("view_flat").addEventListener("change", () => { if ($("view_flat").checked){ state.viewMode = "flat"; render(); } });
   $("view_rooms").addEventListener("change", () => { if ($("view_rooms").checked){ state.viewMode = "rooms"; render(); } });
   $("view_anlagen").addEventListener("change", () => { if ($("view_anlagen").checked){ state.viewMode = "anlagen"; render(); } });
