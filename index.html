@@ -261,11 +261,8 @@
     viewMode: "flat",
     filters: { anlage:"", text:"", etage:"Alle", fassade:"Alle", bereich:"Alle", luftart:"Alle", nutzung:"Alle" },
 
-    // Raum -> Set(all Anlagen tokens)
-    roomAllAnlagenIndex: new Map(),
-
-    // Raum -> Map(AnlageToken -> Set("Luftart (Bereich)"))
-    roomAnlageSupplyIndex: new Map(),
+    roomAllAnlagenIndex: new Map(),      // Raum -> Set(AnlagenTokens)
+    roomAnlageSupplyIndex: new Map(),    // Raum -> Map(AnlageToken -> Set("Luftart (Bereich)"))
   };
 
   const $ = (id) => document.getElementById(id);
@@ -412,50 +409,52 @@
     return !!$("optShowOtherAnlagen").checked;
   }
 
-  // liefert sortierte Liste von AnlageTokens für einen Raum (alle)
   function getAllAnlagenForRoom(roomKey){
     const all = state.roomAllAnlagenIndex.get(roomKey);
     if (!all) return [];
     return Array.from(all).sort((a,b)=>String(a).localeCompare(String(b),"de",{numeric:true}));
   }
 
-  // Liefert Mitversorgung-Text "1.6: Zuluft allgemein (NW), ... | 2.7: ..."
-  // excludeTokens: Tokens, die NICHT als Mitversorgung aufgeführt werden sollen (z.B. selektierte Stör-Anlagen oder aktuelle Block-Anlage)
-  // Wenn excludeTokens leer/undefined, wird ALLES ausgegeben (hilfreich, wenn keine Referenz-Anlage eingegeben wurde)
-  function getMitversorgungText(roomKey, excludeTokens){
+  // ✅ Zentrale, robuste Funktion: Mitversorgung als Array von Zeilen
+  // - excludeTokens: Tokens, die NICHT ausgegeben werden sollen (z.B. eingegebene Störanlagen, oder "aktuelle" Block-Anlage)
+  // - Wenn excludeTokens null/leer: komplette Anlagenliste je Raum (inkl. Luftart/Bereich) -> sehr hilfreich im Normalbetrieb
+  function getMitversorgungLines(roomKey, excludeTokens){
     const allTokens = getAllAnlagenForRoom(roomKey);
-    if (!allTokens.length) return "";
+    if (!allTokens.length) return [];
 
     const exclude = new Set((excludeTokens || []).filter(Boolean));
-    const tokensToShow = excludeTokens && exclude.size
+    const tokensToShow = (excludeTokens && exclude.size)
       ? allTokens.filter(t => !exclude.has(t))
-      : allTokens.slice(); // ohne Referenz: komplette Anlagenliste je Raum
+      : allTokens.slice();
 
-    if (!tokensToShow.length) return "";
+    if (!tokensToShow.length) return [];
 
     const m = state.roomAnlageSupplyIndex.get(roomKey);
-    const parts = tokensToShow.map(t => {
+    return tokensToShow.map(t => {
       const set = m ? m.get(t) : null;
       const list = set ? Array.from(set).sort((x,y)=>String(x).localeCompare(String(y),"de",{numeric:true})) : [];
       return list.length ? `${t}: ${list.join(", ")}` : `${t}`;
     });
-
-    return parts.join(" | ");
   }
 
+  // UI: hübsch als Blöcke
   function renderMitversorgungHtml(roomKey, excludeTokens){
-    const txt = getMitversorgungText(roomKey, excludeTokens);
-    if (!txt) return `<span class="text-gray-400">–</span>`;
+    const lines = getMitversorgungLines(roomKey, excludeTokens);
+    if (!lines.length) return `<span class="text-gray-400">–</span>`;
 
-    const blocks = txt.split(" | ").map(chunk => {
-      const [anlage, rest] = chunk.split(": ");
+    return lines.map(line => {
+      const [anlage, rest] = line.split(": ");
       if (!rest) return `<div class="mb-1"><span class="font-mono font-semibold">${escapeHtml(anlage)}</span></div>`;
       return `<div class="mb-1">
         <span class="font-mono font-semibold">${escapeHtml(anlage)}:</span>
         <span class="text-gray-700">${escapeHtml(rest)}</span>
       </div>`;
     }).join("");
-    return blocks;
+  }
+
+  // PDF: Mitversorgung untereinander (jede Anlage eigene Zeile)
+  function getMitversorgungTextPdf(roomKey, excludeTokens){
+    return getMitversorgungLines(roomKey, excludeTokens).join("\n");
   }
 
   function applyFilters(){
@@ -593,7 +592,6 @@
       return;
     }
 
-    // Referenz-Anlagen aus Eingabe (wenn vorhanden): dann als "exclude" für Mitversorgung
     const selectedTokens = parseAnlageQuery(state.filters.anlage);
 
     for (const room of state.filteredRooms){
@@ -612,8 +610,6 @@
       let mitCell = "";
       if (showMit){
         const rk = roomKeyOf(room);
-        // Wenn Anlagenfeld leer: zeige komplette Anlagenliste (excludeTokens = null)
-        // Wenn Anlagenfeld gefüllt: Mitversorgung = alle anderen Anlagen außer den eingegebenen
         const exclude = selectedTokens.length ? selectedTokens : null;
         mitCell = `<td class="px-4 py-2 text-sm text-gray-700">${renderMitversorgungHtml(rk, exclude)}</td>`;
       }
@@ -700,8 +696,6 @@
         let mitTd = "";
         if (showMit){
           const rk = roomKeyOf(r);
-          // Wenn Anlagenfeld gefüllt: exclude = eingegebene Störanlagen (typisch)
-          // Sonst exclude = aktuelle Tabellen-Anlage(n) aus dieser Zelle (damit "weitere Anlagen" sichtbar werden)
           const exclude = selectedTokens.length ? selectedTokens : (r.AnlageTokens || tokenizeAnlageCell(r.Anlage));
           mitTd = `<td class="px-4 py-2 text-sm text-gray-700">${renderMitversorgungHtml(rk, exclude)}</td>`;
         }
@@ -728,7 +722,7 @@
     }
   }
 
-  // ===== PDF: helper =====
+  // ===== PDF helpers =====
   function pdfHeader(doc, title, subtitleLines){
     const pageW = doc.internal.pageSize.getWidth();
     doc.setFont("helvetica","bold");
@@ -742,7 +736,6 @@
       doc.text(line, 40, y);
       y += 12;
     }
-    // dünne Linie
     doc.setDrawColor(200);
     doc.line(40, y + 2, pageW - 40, y + 2);
     return y + 14;
@@ -768,10 +761,6 @@
       tableWidth: "auto",
       theme: "grid",
       showHead: "everyPage",
-      didDrawPage: (data) => {
-        // Seitenzahl unten rechts
-        const page = doc.internal.getNumberOfPages();
-      }
     };
   }
 
@@ -781,8 +770,6 @@
       return;
     }
     const { jsPDF } = window.jspdf;
-
-    // ✅ Hochformat (Portrait)
     const doc = new jsPDF({ orientation:"portrait", unit:"pt", format:"a4" });
 
     const now = new Date();
@@ -816,7 +803,7 @@
     const common = {
       ...autoTableDefaultOpts(),
       startY,
-      didDrawPage: (data) => {
+      didDrawPage: () => {
         const pageW = doc.internal.pageSize.getWidth();
         const pageH = doc.internal.pageSize.getHeight();
         doc.setFont("helvetica","normal");
@@ -834,14 +821,14 @@
         head,
         body,
         columnStyles: {
-          0: { cellWidth: 42 }, // Etage
-          1: { cellWidth: 52 }, // Raum
-          2: { cellWidth: 170 },// Beschreibung
-          3: { cellWidth: 45 }, // Fassade
-          4: { cellWidth: 35 }, // Bereich
-          5: { cellWidth: 70 }, // Luftart
-          6: { cellWidth: 55 }, // Anlage
-          7: { cellWidth: 85 }, // Nutzung
+          0: { cellWidth: 42 },
+          1: { cellWidth: 52 },
+          2: { cellWidth: 170 },
+          3: { cellWidth: 45 },
+          4: { cellWidth: 35 },
+          5: { cellWidth: 70 },
+          6: { cellWidth: 55 },
+          7: { cellWidth: 85 },
         }
       });
 
@@ -870,9 +857,8 @@
         const row = [r.Etage, r.Raumnummer, r.Raumbeschreibung, r.Fassade, r.Raumnutzungsart, lines.join(" / ")];
 
         if (showMit){
-          // ohne Anlagen-Referenz: kompletter Raum-Überblick (alle Anlagen)
           const exclude = selectedTokens.length ? selectedTokens : null;
-          row.push(getMitversorgungText(roomKeyOf(r), exclude));
+          row.push(getMitversorgungTextPdf(roomKeyOf(r), exclude)); // ✅ untereinander
         }
         return row;
       });
@@ -901,8 +887,6 @@
       });
 
     } else {
-      // Anlagen gruppiert – als "block" erkennbar bleibt, aber PDF bleibt gut lesbar:
-      // Wir erstellen eine große Tabelle, aber mit Anlage-Spalte, sodass es im PDF sortiert bleibt.
       const head = [[
         "Anlage","Etage","Raum","Beschreibung","Fassade","Bereich","Luftart","Nutzung",
         ...(showMit ? ["Mitversorgung (Anlage: Luftarten)"] : [])
@@ -916,7 +900,7 @@
           if (showMit){
             const rk = roomKeyOf(r);
             const exclude = selectedTokens.length ? selectedTokens : (r.AnlageTokens || tokenizeAnlageCell(r.Anlage));
-            row.push(getMitversorgungText(rk, exclude));
+            row.push(getMitversorgungTextPdf(rk, exclude)); // ✅ untereinander
           }
           body.push(row);
         }
@@ -928,15 +912,15 @@
         body,
         styles: { ...common.styles, fontSize: 7.1 },
         columnStyles: showMit ? {
-          0: { cellWidth: 52 },  // Anlage
-          1: { cellWidth: 38 },  // Etage
-          2: { cellWidth: 52 },  // Raum
-          3: { cellWidth: 135 }, // Beschreibung
-          4: { cellWidth: 42 },  // Fassade
-          5: { cellWidth: 32 },  // Bereich
-          6: { cellWidth: 66 },  // Luftart
-          7: { cellWidth: 70 },  // Nutzung
-          8: { cellWidth: 140 }, // Mitversorgung
+          0: { cellWidth: 52 },
+          1: { cellWidth: 38 },
+          2: { cellWidth: 52 },
+          3: { cellWidth: 135 },
+          4: { cellWidth: 42 },
+          5: { cellWidth: 32 },
+          6: { cellWidth: 66 },
+          7: { cellWidth: 70 },
+          8: { cellWidth: 140 },
         } : {
           0: { cellWidth: 58 },
           1: { cellWidth: 42 },
@@ -975,7 +959,7 @@
       "Betroffene Räume – Übersicht (Nutzer)",
       [
         `Quelle: ${state.meta.fileName || "-"} | Export: ${dt}${showMit ? " | Mitversorgung: AN" : ""}`,
-        `Hinweis: Nutzer-Ausgabe ist reduziert (ohne Etage/Bereich-Spalten, außer in Mitversorgung/Versorgung-Text).`
+        `Hinweis: Nutzer-Ausgabe reduziert. Mitversorgung wird je Anlage untereinander ausgegeben.`
       ]
     );
 
@@ -983,7 +967,7 @@
       ...autoTableDefaultOpts(),
       startY,
       styles: { ...autoTableDefaultOpts().styles, fontSize: 8 },
-      didDrawPage: (data) => {
+      didDrawPage: () => {
         const pageW = doc.internal.pageSize.getWidth();
         const pageH = doc.internal.pageSize.getHeight();
         doc.setFont("helvetica","normal");
@@ -993,7 +977,6 @@
     };
 
     if (!mergeByRoom){
-      // Nutzer-PDF nach Anlage "im Block" (mehrere Tabellen pro Anlage, gut lesbar)
       let y = startY;
 
       for (const block of state.filteredAnlagenBlocks){
@@ -1019,7 +1002,7 @@
           if (showMit){
             const rk = roomKeyOf(r);
             const exclude = selectedTokens.length ? selectedTokens : (r.AnlageTokens || tokenizeAnlageCell(r.Anlage));
-            row.push(getMitversorgungText(rk, exclude));
+            row.push(getMitversorgungTextPdf(rk, exclude)); // ✅ untereinander
           }
           body.push(row);
         }
@@ -1056,7 +1039,6 @@
       return;
     }
 
-    // Nutzer-PDF pro Raum zusammengefasst
     const map = new Map();
     for (const r of state.filteredFlat){
       const roomKey = `${r.Raumnummer}|${r.Raumbeschreibung}|${r.Fassade}`;
@@ -1088,11 +1070,9 @@
       const row = [x.raum, x.bez, x.fas, parts.join(" | ")];
 
       if (showMit){
-        // ohne Referenz: komplette Anlagenliste pro Raum (kompakt)
         const exclude = selectedTokens.length ? selectedTokens : null;
-        row.push(getMitversorgungText(String(x.raum||""), exclude));
+        row.push(getMitversorgungTextPdf(String(x.raum||""), exclude)); // ✅ untereinander
       }
-
       return row;
     });
 
@@ -1243,8 +1223,6 @@
 
   $("f_anlage").addEventListener("input", e => {
     state.filters.anlage = e.target.value;
-
-    // Anwenderfreundlich: bei mehreren Anlagen automatisch auf Anlagen-Blockansicht springen
     const tokens = parseAnlageQuery(state.filters.anlage);
     if (tokens.length >= 2){
       state.viewMode = "anlagen";
