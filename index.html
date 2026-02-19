@@ -48,11 +48,21 @@
         </div>
       </div>
 
-      <div class="flex items-center gap-2">
-        <input id="optUserPdfMerge" type="checkbox" class="accent-blue-600" disabled>
-        <label for="optUserPdfMerge" class="text-sm text-gray-700">
-          Nutzer-PDF: pro Raum Versorgung zusammenfassen (Luftarten → Anlagen)
-        </label>
+      <div class="flex flex-col gap-2">
+        <div class="flex items-center gap-2">
+          <input id="optUserPdfMerge" type="checkbox" class="accent-blue-600" disabled>
+          <label for="optUserPdfMerge" class="text-sm text-gray-700">
+            Nutzer-PDF: pro Raum Versorgung zusammenfassen (Luftarten → Anlagen)
+          </label>
+        </div>
+
+        <div class="flex items-center gap-2">
+          <input id="optShowOtherAnlagen" type="checkbox" class="accent-blue-600" disabled>
+          <label for="optShowOtherAnlagen" class="text-sm text-gray-700">
+            Weitere Anlagen je Raum anzeigen (Mitversorgung)
+          </label>
+          <span class="text-xs text-gray-500">— wirkt in „Räume gruppiert“ und „Anlagen gruppiert“</span>
+        </div>
       </div>
     </div>
 
@@ -209,10 +219,11 @@
             <th class="px-4 py-2 text-left text-xs font-semibold text-gray-600 uppercase">Fassade</th>
             <th class="px-4 py-2 text-left text-xs font-semibold text-gray-600 uppercase">Nutzung</th>
             <th class="px-4 py-2 text-left text-xs font-semibold text-gray-600 uppercase">Versorgung (Bereich → Luftart → Anlagen)</th>
+            <th id="th_rooms_other" class="px-4 py-2 text-left text-xs font-semibold text-gray-600 uppercase hidden">Weitere Anlagen</th>
           </tr>
         </thead>
         <tbody id="tbody_rooms" class="divide-y divide-gray-200">
-          <tr><td colspan="6" class="px-4 py-6 text-center text-gray-500">Keine Daten geladen.</td></tr>
+          <tr><td colspan="7" class="px-4 py-6 text-center text-gray-500">Keine Daten geladen.</td></tr>
         </tbody>
       </table>
 
@@ -244,7 +255,9 @@
     filteredAnlagenBlocks: [],
     meta: { fileName:"", sheetName:"", roomCount:0, flatCount:0 },
     viewMode: "flat",
-    filters: { anlage:"", text:"", etage:"Alle", fassade:"Alle", bereich:"Alle", luftart:"Alle", nutzung:"Alle" }
+    filters: { anlage:"", text:"", etage:"Alle", fassade:"Alle", bereich:"Alle", luftart:"Alle", nutzung:"Alle" },
+    // Index: RoomKey -> Set(all Anlagen tokens)
+    roomAllAnlagenIndex: new Map(),
   };
 
   const $ = (id) => document.getElementById(id);
@@ -263,12 +276,12 @@
 
   function enableControls(){
     ["f_anlage","f_text","f_etage","f_fassade","f_bereich","f_luftart","f_nutzung",
-     "btnReset","btnPdf","btnPdfUser","view_flat","view_rooms","view_anlagen","optUserPdfMerge"]
+     "btnReset","btnPdf","btnPdfUser","view_flat","view_rooms","view_anlagen","optUserPdfMerge","optShowOtherAnlagen"]
       .forEach(id => $(id).disabled = false);
   }
   function disableControls(){
     ["f_anlage","f_text","f_etage","f_fassade","f_bereich","f_luftart","f_nutzung",
-     "btnReset","btnPdf","btnPdfUser","view_flat","view_rooms","view_anlagen","optUserPdfMerge"]
+     "btnReset","btnPdf","btnPdfUser","view_flat","view_rooms","view_anlagen","optUserPdfMerge","optShowOtherAnlagen"]
       .forEach(id => $(id).disabled = true);
   }
 
@@ -323,35 +336,32 @@
     return raw.split(/[\s,;|]+/g).map(s => s.trim()).filter(Boolean);
   }
 
-  // Zellenwert (Anlage): in Tokens zerlegen.
-  // Wichtig: Trennzeichen sind viele, weil Excel-Zellen oft "1.1, 1.6 / 2.7" o.ä. enthalten.
-  // Ergebnis: exakte Tokens -> "1.1" wird NICHT "1.12".
+  // Zellenwert (Anlage): in Tokens zerlegen (für exakte 1.1 ≠ 1.12)
   function tokenizeAnlageCell(value){
     const v = String(value || "").trim();
     if (!v) return [];
 
-    // Normalize: Klammern/Label-Wörter entfernen, ohne die Zahlen zu zerstören
-    // (optional, aber hilfreich bei "Anlage 1.1" / "RLT 1.1")
     const cleaned = v
       .replace(/\b(anlage|rlt|lüftung|lueftung)\b/gi, " ")
       .replace(/\s+/g, " ")
       .trim();
 
-    // Split auf Trennzeichen (Komma, Slash, Semikolon, Pipe, Zeilenumbruch, Tab)
-    // Punkt bleibt erhalten (wichtig für 1.1)
     const parts = cleaned.split(/[,\;/\|\n\r\t]+/g)
       .map(s => s.trim())
       .filter(Boolean);
 
-    // Zusätzlich: innerhalb jedes Teils noch nach " " splitten (falls "1.1 1.6" in einer Zelle steht)
     const tokens = [];
     for (const p of parts){
       const sub = p.split(/\s+/g).map(x => x.trim()).filter(Boolean);
       tokens.push(...sub);
     }
-
-    // final: eindeutige Tokens
     return Array.from(new Set(tokens));
+  }
+
+  // Raum-Key (stabil, ohne Etage, weil du "weitere Anlagen je Raum" fachlich meist über Raumnummer brauchst)
+  // Wenn bei dir Raumnummern mehrfach vorkommen (selten), kann man Etage ergänzen.
+  function roomKeyOf(rowOrRoomObj){
+    return String(rowOrRoomObj.Raumnummer || "").trim();
   }
 
   function sortByEtageRaum(a, b){
@@ -362,16 +372,44 @@
     return String(a.Raumnummer||"").localeCompare(String(b.Raumnummer||""), "de", { numeric:true });
   }
 
+  function buildRoomAllAnlagenIndex(flatRows){
+    const idx = new Map(); // roomKey -> Set(tokens)
+    for (const r of flatRows){
+      const k = roomKeyOf(r);
+      if (!k) continue;
+      if (!idx.has(k)) idx.set(k, new Set());
+      const s = idx.get(k);
+      const tokens = r.AnlageTokens || tokenizeAnlageCell(r.Anlage);
+      for (const t of tokens) s.add(t);
+    }
+    return idx;
+  }
+
+  function getOtherAnlagenForRoom(roomKey, selectedTokens){
+    const all = state.roomAllAnlagenIndex.get(roomKey);
+    if (!all) return [];
+    const sel = new Set(selectedTokens || []);
+    const out = [];
+    for (const a of all){
+      if (!sel.has(a)) out.push(a);
+    }
+    out.sort((x,y)=>String(x).localeCompare(String(y),"de",{numeric:true}));
+    return out;
+  }
+
+  function renderAnlagenChips(list){
+    if (!list || !list.length) return `<span class="text-gray-400">–</span>`;
+    return list.map(a => `<span class="inline-block px-2 py-0.5 rounded bg-gray-50 border border-gray-200 text-gray-900 font-mono text-xs mr-1 mb-1">${escapeHtml(a)}</span>`).join("");
+  }
+
   function applyFilters(){
     let rows = state.flat.slice();
     const f = state.filters;
 
-    // Anlagenfilter: EXAKT per Tokenvergleich
     const queryTokens = parseAnlageQuery(f.anlage);
     if (queryTokens.length){
       rows = rows.filter(r => {
         const cellTokens = r.AnlageTokens || tokenizeAnlageCell(r.Anlage);
-        // ODER-Suche: wenn irgendein Query-Token exakt in den Zell-Tokens vorkommt
         return queryTokens.some(q => cellTokens.includes(q));
       });
     }
@@ -492,16 +530,22 @@
   }
 
   function renderRooms(){
+    const showOther = !!$("optShowOtherAnlagen").checked;
+    $("th_rooms_other").classList.toggle("hidden", !showOther);
+
     elTbodyRooms.innerHTML = "";
     if (!state.filteredRooms.length){
-      elTbodyRooms.innerHTML = `<tr><td colspan="6" class="px-4 py-6 text-center text-gray-500">Keine Treffer.</td></tr>`;
+      elTbodyRooms.innerHTML = `<tr><td colspan="${showOther ? 7 : 6}" class="px-4 py-6 text-center text-gray-500">Keine Treffer.</td></tr>`;
       return;
     }
+
+    const selectedTokens = parseAnlageQuery(state.filters.anlage);
 
     for (const room of state.filteredRooms){
       const tr = document.createElement("tr");
       tr.className = "hover:bg-gray-50";
-      tr.innerHTML = `
+
+      const baseCells = `
         <td class="px-4 py-2 text-sm text-gray-700">${escapeHtml(room.Etage)}</td>
         <td class="px-4 py-2 text-sm text-gray-700 font-mono">${escapeHtml(room.Raumnummer)}</td>
         <td class="px-4 py-2 text-sm text-gray-700">${escapeHtml(room.Raumbeschreibung)}</td>
@@ -509,6 +553,15 @@
         <td class="px-4 py-2 text-sm text-gray-700">${escapeHtml(room.Raumnutzungsart)}</td>
         <td class="px-4 py-2 text-sm text-gray-700">${renderVersorgungCell(room.Versorgung)}</td>
       `;
+
+      let otherCell = "";
+      if (showOther){
+        const rk = roomKeyOf(room);
+        const others = selectedTokens.length ? getOtherAnlagenForRoom(rk, selectedTokens) : [];
+        otherCell = `<td class="px-4 py-2 text-sm text-gray-700">${renderAnlagenChips(others)}</td>`;
+      }
+
+      tr.innerHTML = baseCells + otherCell;
       elTbodyRooms.appendChild(tr);
     }
   }
@@ -548,6 +601,9 @@
       return;
     }
 
+    const showOther = !!$("optShowOtherAnlagen").checked;
+    const selectedTokens = parseAnlageQuery(state.filters.anlage);
+
     for (const block of state.filteredAnlagenBlocks){
       const wrapper = document.createElement("div");
       wrapper.className = "border border-gray-200 rounded-lg bg-white shadow-sm";
@@ -562,6 +618,7 @@
 
       const table = document.createElement("table");
       table.className = "min-w-full divide-y divide-gray-200";
+
       table.innerHTML = `
         <thead class="bg-white">
           <tr>
@@ -572,6 +629,7 @@
             <th class="px-4 py-2 text-left text-xs font-semibold text-gray-600 uppercase">Bereich</th>
             <th class="px-4 py-2 text-left text-xs font-semibold text-gray-600 uppercase">Luftart</th>
             <th class="px-4 py-2 text-left text-xs font-semibold text-gray-600 uppercase">Nutzung</th>
+            ${showOther ? `<th class="px-4 py-2 text-left text-xs font-semibold text-gray-600 uppercase">Weitere Anlagen</th>` : ``}
           </tr>
         </thead>
         <tbody class="divide-y divide-gray-200"></tbody>
@@ -581,6 +639,14 @@
       for (const r of block.items){
         const tr = document.createElement("tr");
         tr.className = "hover:bg-gray-50";
+
+        let otherTd = "";
+        if (showOther){
+          const rk = roomKeyOf(r);
+          const others = selectedTokens.length ? getOtherAnlagenForRoom(rk, selectedTokens) : [];
+          otherTd = `<td class="px-4 py-2 text-sm text-gray-700">${renderAnlagenChips(others)}</td>`;
+        }
+
         tr.innerHTML = `
           <td class="px-4 py-2 text-sm text-gray-700">${escapeHtml(r.Etage)}</td>
           <td class="px-4 py-2 text-sm text-gray-700 font-mono">${escapeHtml(r.Raumnummer)}</td>
@@ -589,6 +655,7 @@
           <td class="px-4 py-2 text-sm text-gray-700 font-mono">${escapeHtml(r.Bereich)}</td>
           <td class="px-4 py-2 text-sm text-gray-700">${escapeHtml(r.Luftart)}</td>
           <td class="px-4 py-2 text-sm text-gray-700">${escapeHtml(r.Raumnutzungsart)}</td>
+          ${otherTd}
         `;
         tb.appendChild(tr);
       }
@@ -600,18 +667,6 @@
 
       elBlocks.appendChild(wrapper);
     }
-  }
-
-  function resetFilters(){
-    state.filters = { anlage:"", text:"", etage:"Alle", fassade:"Alle", bereich:"Alle", luftart:"Alle", nutzung:"Alle" };
-    $("f_anlage").value = "";
-    $("f_text").value = "";
-    $("f_etage").value = "Alle";
-    $("f_fassade").value = "Alle";
-    $("f_bereich").value = "Alle";
-    $("f_luftart").value = "Alle";
-    $("f_nutzung").value = "Alle";
-    applyFilters();
   }
 
   function exportPdfInternal(){
@@ -770,7 +825,7 @@
       return;
     }
 
-    // pro Raum eine Zeile: Luftarten -> Anlagen
+    // pro Raum eine Zeile: Luftarten -> Anlagen (ohne Etage)
     const map = new Map();
     for (const r of state.filteredFlat){
       const roomKey = `${r.Raumnummer}|${r.Raumbeschreibung}|${r.Fassade}`;
@@ -892,7 +947,6 @@
                 Bereich: sc.area,
                 Luftart: sc.luftart,
                 Anlage: anlageRaw,
-                // PRECOMPUTE: Tokens für exakte Suche (schnell + korrekt)
                 AnlageTokens: tokenizeAnlageCell(anlageRaw)
               });
             }
@@ -901,6 +955,7 @@
 
         state.mappedRaw = mappedRaw;
         state.flat = flat;
+        state.roomAllAnlagenIndex = buildRoomAllAnlagenIndex(flat);
 
         state.meta = { fileName: file.name, sheetName, roomCount: mappedRaw.length, flatCount: flat.length };
         elMeta.textContent = `Quelle: ${state.meta.fileName} • Blatt: ${state.meta.sheetName} • Räume: ${state.meta.roomCount} • Versorgungseinträge: ${state.meta.flatCount}`;
@@ -938,7 +993,6 @@
   $("f_anlage").addEventListener("input", e => {
     state.filters.anlage = e.target.value;
 
-    // Bei mehreren Tokens automatisch Anlagen-Blocks (egal ob 2 oder 10)
     const tokens = parseAnlageQuery(state.filters.anlage);
     if (tokens.length >= 2){
       state.viewMode = "anlagen";
@@ -956,6 +1010,8 @@
       applyFilters();
     });
   });
+
+  $("optShowOtherAnlagen").addEventListener("change", () => render());
 
   $("view_flat").addEventListener("change", () => { if ($("view_flat").checked){ state.viewMode = "flat"; render(); } });
   $("view_rooms").addEventListener("change", () => { if ($("view_rooms").checked){ state.viewMode = "rooms"; render(); } });
