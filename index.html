@@ -5,13 +5,9 @@
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>RLT Raumzuordnung – Suche & PDF</title>
 
-  <!-- Tailwind (helles UI) -->
   <script src="https://cdn.tailwindcss.com"></script>
-
-  <!-- XLSX (SheetJS) – cdnjs -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 
-  <!-- jsPDF + AutoTable (cdnjs) -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.5.29/jspdf.plugin.autotable.min.js"></script>
 
@@ -151,7 +147,6 @@
         </select>
       </div>
 
-      <!-- Ansicht Umschalter -->
       <div class="lg:col-span-4 flex flex-wrap items-center gap-2 mt-2">
         <button id="btnReset"
           class="bg-white hover:bg-gray-50 border border-gray-300 text-gray-800 font-semibold py-2 px-4 rounded-lg shadow-sm transition disabled:bg-gray-100 disabled:cursor-not-allowed"
@@ -188,9 +183,7 @@
       </div>
     </div>
 
-    <!-- Results -->
     <div class="overflow-auto rounded-lg border border-gray-200 bg-white">
-      <!-- Flat table -->
       <table id="table_flat" class="min-w-full divide-y divide-gray-200">
         <thead class="bg-gray-50">
           <tr>
@@ -209,7 +202,6 @@
         </tbody>
       </table>
 
-      <!-- Rooms grouped table -->
       <table id="table_rooms" class="min-w-full divide-y divide-gray-200 hidden">
         <thead class="bg-gray-50">
           <tr>
@@ -227,7 +219,6 @@
         </tbody>
       </table>
 
-      <!-- Anlagen grouped (blocks) -->
       <div id="view_anlagen_blocks" class="hidden p-4">
         <div id="anlagen_blocks_container" class="space-y-4">
           <div class="text-gray-500 text-center py-8">Keine Daten geladen.</div>
@@ -256,7 +247,6 @@
     meta: { fileName:"", sheetName:"", roomCount:0, flatCount:0 },
     viewMode: "flat",
     filters: { anlage:"", text:"", etage:"Alle", fassade:"Alle", bereich:"Alle", luftart:"Alle", nutzung:"Alle" },
-    // Index: RoomKey -> Set(all Anlagen tokens)
     roomAllAnlagenIndex: new Map(),
   };
 
@@ -329,14 +319,12 @@
     sel.value = [...sel.options].some(o => o.value === cur) ? cur : "Alle";
   }
 
-  // Such-Eingabe: beliebig viele Anlagen-Tokens
   function parseAnlageQuery(text){
     const raw = String(text || "").trim();
     if (!raw) return [];
     return raw.split(/[\s,;|]+/g).map(s => s.trim()).filter(Boolean);
   }
 
-  // Zellenwert (Anlage): in Tokens zerlegen (für exakte 1.1 ≠ 1.12)
   function tokenizeAnlageCell(value){
     const v = String(value || "").trim();
     if (!v) return [];
@@ -358,10 +346,8 @@
     return Array.from(new Set(tokens));
   }
 
-  // Raum-Key (stabil, ohne Etage, weil du "weitere Anlagen je Raum" fachlich meist über Raumnummer brauchst)
-  // Wenn bei dir Raumnummern mehrfach vorkommen (selten), kann man Etage ergänzen.
-  function roomKeyOf(rowOrRoomObj){
-    return String(rowOrRoomObj.Raumnummer || "").trim();
+  function roomKeyOf(obj){
+    return String(obj.Raumnummer || "").trim();
   }
 
   function sortByEtageRaum(a, b){
@@ -373,7 +359,7 @@
   }
 
   function buildRoomAllAnlagenIndex(flatRows){
-    const idx = new Map(); // roomKey -> Set(tokens)
+    const idx = new Map();
     for (const r of flatRows){
       const k = roomKeyOf(r);
       if (!k) continue;
@@ -669,6 +655,8 @@
     }
   }
 
+  // ===== PDF EXPORTS: jetzt inkl. "Weitere Anlagen" wenn Option aktiv =====
+
   function exportPdfInternal(){
     if (!(window.jspdf && window.jspdf.jsPDF)){
       setStatus("err","PDF-Bibliothek nicht verfügbar (jsPDF wurde nicht geladen).");
@@ -679,6 +667,8 @@
 
     const now = new Date();
     const dt = now.toLocaleString("de-DE");
+    const showOther = !!$("optShowOtherAnlagen").checked;
+    const selectedTokens = parseAnlageQuery(state.filters.anlage);
 
     const f = state.filters;
     const filterLine = [
@@ -688,7 +678,8 @@
       f.fassade !== "Alle" ? `Fassade=${f.fassade}` : null,
       f.bereich !== "Alle" ? `Bereich=${f.bereich}` : null,
       f.luftart !== "Alle" ? `Luftart=${f.luftart}` : null,
-      f.nutzung !== "Alle" ? `Nutzung=${f.nutzung}` : null
+      f.nutzung !== "Alle" ? `Nutzung=${f.nutzung}` : null,
+      showOther ? `Mitversorgung=AN` : null
     ].filter(Boolean).join(" | ") || "keine Filter (alle Daten)";
 
     doc.setFont("helvetica","bold");
@@ -703,20 +694,37 @@
     if (state.viewMode === "anlagen"){
       doc.text(`Ansicht: Anlagen gruppiert | Anlagen: ${state.filteredAnlagenBlocks.length}`, 40, 90);
 
-      const head = [[ "Anlage","Etage","Raum","Beschreibung","Fassade","Bereich","Luftart","Nutzung" ]];
+      const head = [[
+        "Anlage","Etage","Raum","Beschreibung","Fassade","Bereich","Luftart","Nutzung",
+        ...(showOther ? ["Weitere Anlagen"] : [])
+      ]];
+
       const body = [];
       for (const block of state.filteredAnlagenBlocks){
         for (const r of block.items){
-          body.push([block.Anlage, r.Etage, r.Raumnummer, r.Raumbeschreibung, r.Fassade, r.Bereich, r.Luftart, r.Raumnutzungsart]);
+          const row = [block.Anlage, r.Etage, r.Raumnummer, r.Raumbeschreibung, r.Fassade, r.Bereich, r.Luftart, r.Raumnutzungsart];
+          if (showOther){
+            const others = selectedTokens.length ? getOtherAnlagenForRoom(roomKeyOf(r), selectedTokens) : [];
+            row.push(others.join(", "));
+          }
+          body.push(row);
         }
       }
 
-      doc.autoTable({ head, body, startY: 110, styles: { font:"helvetica", fontSize: 8, cellPadding: 4 }, margin: { left: 40, right: 40 } });
+      doc.autoTable({
+        head, body, startY: 110,
+        styles: { font:"helvetica", fontSize: 8, cellPadding: 4 },
+        margin: { left: 40, right: 40 }
+      });
 
     } else if (state.viewMode === "rooms"){
       doc.text(`Ansicht: Räume gruppiert | Räume: ${state.filteredRooms.length}`, 40, 90);
 
-      const head = [[ "Etage","Raum","Beschreibung","Fassade","Nutzung","Versorgung" ]];
+      const head = [[
+        "Etage","Raum","Beschreibung","Fassade","Nutzung","Versorgung",
+        ...(showOther ? ["Weitere Anlagen"] : [])
+      ]];
+
       const body = state.filteredRooms.map(r => {
         const lines = [];
         for (const area of AREAS){
@@ -732,17 +740,25 @@
 
           lines.push(`${area}: ${airLine}`);
         }
-        return [r.Etage, r.Raumnummer, r.Raumbeschreibung, r.Fassade, r.Raumnutzungsart, lines.join(" / ")];
+
+        const row = [r.Etage, r.Raumnummer, r.Raumbeschreibung, r.Fassade, r.Raumnutzungsart, lines.join(" / ")];
+
+        if (showOther){
+          const others = selectedTokens.length ? getOtherAnlagenForRoom(roomKeyOf(r), selectedTokens) : [];
+          row.push(others.join(", "));
+        }
+        return row;
       });
 
       doc.autoTable({
         head, body, startY: 110,
         styles: { font:"helvetica", fontSize: 7, cellPadding: 4 },
-        columnStyles: { 5: { cellWidth: 420 } },
+        columnStyles: { 5: { cellWidth: showOther ? 360 : 420 }, ...(showOther ? { 6: { cellWidth: 160 } } : {}) },
         margin: { left: 40, right: 40 }
       });
 
     } else {
+      // Flat: bewusst ohne "Weitere Anlagen" (kein pro-Raum-Aggregat)
       const rooms = new Set(state.filteredFlat.map(r => r.Raumnummer));
       doc.text(`Ansicht: Versorgungseinträge | Treffer: ${state.filteredFlat.length} | Betroffene Räume: ${rooms.size}`, 40, 90);
 
@@ -768,18 +784,20 @@
     const now = new Date();
     const dt = now.toLocaleString("de-DE");
 
+    const headColor = [225, 225, 225];
+    const headText  = [0, 0, 0];
+
+    const mergeByRoom = !!$("optUserPdfMerge")?.checked;
+    const showOther = !!$("optShowOtherAnlagen")?.checked;
+    const selectedTokens = parseAnlageQuery(state.filters.anlage);
+
     doc.setFont("helvetica","bold");
     doc.setFontSize(14);
     doc.text("Betroffene Räume – Übersicht (Nutzer)", 40, 40);
 
     doc.setFont("helvetica","normal");
     doc.setFontSize(10);
-    doc.text(`Quelle: ${state.meta.fileName || "-"} | Export: ${dt}`, 40, 58);
-
-    const headColor = [225, 225, 225];
-    const headText  = [0, 0, 0];
-
-    const mergeByRoom = !!$("optUserPdfMerge")?.checked;
+    doc.text(`Quelle: ${state.meta.fileName || "-"} | Export: ${dt}${showOther ? " | Mitversorgung: AN" : ""}`, 40, 58);
 
     if (!mergeByRoom){
       const blocks = groupByAnlageBlocks(state.filteredFlat);
@@ -791,7 +809,10 @@
         doc.text(`Anlage: ${block.Anlage}`, 40, startY);
         startY += 10;
 
-        const head = [[ "Raum", "Beschreibung", "Fassade", "Luftart" ]];
+        const head = [[
+          "Raum", "Beschreibung", "Fassade", "Luftart",
+          ...(showOther ? ["Weitere Anlagen"] : [])
+        ]];
 
         const seen = new Set();
         const body = [];
@@ -799,7 +820,14 @@
           const key = `${r.Raumnummer}|${r.Raumbeschreibung}|${r.Fassade}|${r.Luftart}|${block.Anlage}`;
           if (seen.has(key)) continue;
           seen.add(key);
-          body.push([r.Raumnummer, r.Raumbeschreibung, r.Fassade, r.Luftart]);
+
+          const row = [r.Raumnummer, r.Raumbeschreibung, r.Fassade, r.Luftart];
+
+          if (showOther){
+            const others = selectedTokens.length ? getOtherAnlagenForRoom(roomKeyOf(r), selectedTokens) : [];
+            row.push(others.join(", "));
+          }
+          body.push(row);
         }
 
         doc.autoTable({
@@ -810,6 +838,7 @@
           headStyles: { fillColor: headColor, textColor: headText, fontStyle: "bold" },
           alternateRowStyles: { fillColor: [245,245,245] },
           margin: { left: 40, right: 40 },
+          columnStyles: showOther ? { 4: { cellWidth: 160 } } : {}
         });
 
         startY = doc.lastAutoTable.finalY + 18;
@@ -841,7 +870,11 @@
       String(a.raum||"").localeCompare(String(b.raum||""), "de", { numeric:true })
     );
 
-    const head = [[ "Raum", "Beschreibung", "Fassade", "Versorgung (Luftart: Anlagen)" ]];
+    const head = [[
+      "Raum", "Beschreibung", "Fassade", "Versorgung (Luftart: Anlagen)",
+      ...(showOther ? ["Weitere Anlagen"] : [])
+    ]];
+
     const body = rows.map(x => {
       const parts = Array.from(x.luft.entries())
         .sort((a,b)=>String(a[0]).localeCompare(String(b[0]), "de", { numeric:true }))
@@ -849,7 +882,15 @@
           const list = Array.from(set).filter(Boolean).sort((a,b)=>String(a).localeCompare(String(b),"de",{numeric:true}));
           return `${luftart}: ${list.join(", ")}`;
         });
-      return [x.raum, x.bez, x.fas, parts.join(" | ")];
+
+      const row = [x.raum, x.bez, x.fas, parts.join(" | ")];
+
+      if (showOther){
+        const others = selectedTokens.length ? getOtherAnlagenForRoom(String(x.raum||""), selectedTokens) : [];
+        row.push(others.join(", "));
+      }
+
+      return row;
     });
 
     doc.autoTable({
@@ -860,14 +901,18 @@
       headStyles: { fillColor: headColor, textColor: headText, fontStyle: "bold" },
       alternateRowStyles: { fillColor: [245,245,245] },
       margin: { left: 40, right: 40 },
-      columnStyles: { 3: { cellWidth: 260 } }
+      columnStyles: {
+        3: { cellWidth: showOther ? 230 : 260 },
+        ...(showOther ? { 4: { cellWidth: 130 } } : {})
+      }
     });
 
     const safe = (state.meta.fileName || "raumzuordnung").replace(/\.[^.]+$/, "").replace(/[^a-z0-9_-]+/gi, "_");
     doc.save(`${safe}_Nutzer_Uebersicht_raeume_${now.toISOString().slice(0,10)}.pdf`);
   }
 
-  // Datei laden
+  // ===== rest: load + UI events =====
+
   $("file").addEventListener("change", (event) => {
     const file = event.target.files && event.target.files[0];
     if (!file) return;
@@ -989,7 +1034,6 @@
     reader.readAsArrayBuffer(file);
   });
 
-  // Filter Events
   $("f_anlage").addEventListener("input", e => {
     state.filters.anlage = e.target.value;
 
