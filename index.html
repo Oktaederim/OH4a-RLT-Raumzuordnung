@@ -261,8 +261,8 @@
     viewMode: "flat",
     filters: { anlage:"", text:"", etage:"Alle", fassade:"Alle", bereich:"Alle", luftart:"Alle", nutzung:"Alle" },
 
-    roomAllAnlagenIndex: new Map(),      // Raum -> Set(AnlagenTokens)
-    roomAnlageSupplyIndex: new Map(),    // Raum -> Map(AnlageToken -> Set("Luftart (Bereich)"))
+    roomAllAnlagenIndex: new Map(),
+    roomAnlageSupplyIndex: new Map(),
   };
 
   const $ = (id) => document.getElementById(id);
@@ -415,9 +415,6 @@
     return Array.from(all).sort((a,b)=>String(a).localeCompare(String(b),"de",{numeric:true}));
   }
 
-  // ✅ Zentrale, robuste Funktion: Mitversorgung als Array von Zeilen
-  // - excludeTokens: Tokens, die NICHT ausgegeben werden sollen (z.B. eingegebene Störanlagen, oder "aktuelle" Block-Anlage)
-  // - Wenn excludeTokens null/leer: komplette Anlagenliste je Raum (inkl. Luftart/Bereich) -> sehr hilfreich im Normalbetrieb
   function getMitversorgungLines(roomKey, excludeTokens){
     const allTokens = getAllAnlagenForRoom(roomKey);
     if (!allTokens.length) return [];
@@ -437,7 +434,6 @@
     });
   }
 
-  // UI: hübsch als Blöcke
   function renderMitversorgungHtml(roomKey, excludeTokens){
     const lines = getMitversorgungLines(roomKey, excludeTokens);
     if (!lines.length) return `<span class="text-gray-400">–</span>`;
@@ -452,7 +448,6 @@
     }).join("");
   }
 
-  // PDF: Mitversorgung untereinander (jede Anlage eigene Zeile)
   function getMitversorgungTextPdf(roomKey, excludeTokens){
     return getMitversorgungLines(roomKey, excludeTokens).join("\n");
   }
@@ -820,15 +815,15 @@
         ...common,
         head,
         body,
-        columnStyles: {
-          0: { cellWidth: 42 },
-          1: { cellWidth: 52 },
-          2: { cellWidth: 170 },
-          3: { cellWidth: 45 },
-          4: { cellWidth: 35 },
-          5: { cellWidth: 70 },
-          6: { cellWidth: 55 },
-          7: { cellWidth: 85 },
+        columnStyles: { // Summe = 515pt (A4 Hochformat mit 40/40 Rand)
+          0: { cellWidth: 34 },
+          1: { cellWidth: 48 },
+          2: { cellWidth: 155 },
+          3: { cellWidth: 38 },
+          4: { cellWidth: 30 },
+          5: { cellWidth: 62 },
+          6: { cellWidth: 42 },
+          7: { cellWidth: 106 },
         }
       });
 
@@ -858,7 +853,7 @@
 
         if (showMit){
           const exclude = selectedTokens.length ? selectedTokens : null;
-          row.push(getMitversorgungTextPdf(roomKeyOf(r), exclude)); // ✅ untereinander
+          row.push(getMitversorgungTextPdf(roomKeyOf(r), exclude));
         }
         return row;
       });
@@ -867,22 +862,22 @@
         ...common,
         head,
         body,
-        styles: { ...common.styles, fontSize: 7.2 },
-        columnStyles: showMit ? {
-          0: { cellWidth: 42 },
-          1: { cellWidth: 52 },
+        styles: { ...common.styles, fontSize: 7.0 },
+        columnStyles: showMit ? { // Summe = 515pt
+          0: { cellWidth: 34 },
+          1: { cellWidth: 48 },
+          2: { cellWidth: 110 },
+          3: { cellWidth: 38 },
+          4: { cellWidth: 65 },
+          5: { cellWidth: 100 },
+          6: { cellWidth: 120 },
+        } : { // Summe = 515pt
+          0: { cellWidth: 34 },
+          1: { cellWidth: 48 },
           2: { cellWidth: 150 },
-          3: { cellWidth: 45 },
+          3: { cellWidth: 38 },
           4: { cellWidth: 80 },
-          5: { cellWidth: 150 },
-          6: { cellWidth: 150 },
-        } : {
-          0: { cellWidth: 42 },
-          1: { cellWidth: 52 },
-          2: { cellWidth: 170 },
-          3: { cellWidth: 45 },
-          4: { cellWidth: 90 },
-          5: { cellWidth: 170 },
+          5: { cellWidth: 165 },
         }
       });
 
@@ -900,7 +895,7 @@
           if (showMit){
             const rk = roomKeyOf(r);
             const exclude = selectedTokens.length ? selectedTokens : (r.AnlageTokens || tokenizeAnlageCell(r.Anlage));
-            row.push(getMitversorgungTextPdf(rk, exclude)); // ✅ untereinander
+            row.push(getMitversorgungTextPdf(rk, exclude));
           }
           body.push(row);
         }
@@ -910,25 +905,25 @@
         ...common,
         head,
         body,
-        styles: { ...common.styles, fontSize: 7.1 },
-        columnStyles: showMit ? {
-          0: { cellWidth: 52 },
-          1: { cellWidth: 38 },
+        styles: { ...common.styles, fontSize: 7.0 },
+        columnStyles: showMit ? { // Summe = 515pt
+          0: { cellWidth: 42 },
+          1: { cellWidth: 34 },
+          2: { cellWidth: 48 },
+          3: { cellWidth: 120 },
+          4: { cellWidth: 36 },
+          5: { cellWidth: 28 },
+          6: { cellWidth: 55 },
+          7: { cellWidth: 55 },
+          8: { cellWidth: 97 },
+        } : { // Summe = 515pt
+          0: { cellWidth: 50 },
+          1: { cellWidth: 36 },
           2: { cellWidth: 52 },
-          3: { cellWidth: 135 },
-          4: { cellWidth: 42 },
-          5: { cellWidth: 32 },
-          6: { cellWidth: 66 },
-          7: { cellWidth: 70 },
-          8: { cellWidth: 140 },
-        } : {
-          0: { cellWidth: 58 },
-          1: { cellWidth: 42 },
-          2: { cellWidth: 58 },
-          3: { cellWidth: 170 },
-          4: { cellWidth: 45 },
-          5: { cellWidth: 35 },
-          6: { cellWidth: 70 },
+          3: { cellWidth: 160 },
+          4: { cellWidth: 40 },
+          5: { cellWidth: 30 },
+          6: { cellWidth: 62 },
           7: { cellWidth: 85 },
         }
       });
@@ -1002,7 +997,7 @@
           if (showMit){
             const rk = roomKeyOf(r);
             const exclude = selectedTokens.length ? selectedTokens : (r.AnlageTokens || tokenizeAnlageCell(r.Anlage));
-            row.push(getMitversorgungTextPdf(rk, exclude)); // ✅ untereinander
+            row.push(getMitversorgungTextPdf(rk, exclude));
           }
           body.push(row);
         }
@@ -1071,7 +1066,7 @@
 
       if (showMit){
         const exclude = selectedTokens.length ? selectedTokens : null;
-        row.push(getMitversorgungTextPdf(String(x.raum||""), exclude)); // ✅ untereinander
+        row.push(getMitversorgungTextPdf(String(x.raum||""), exclude));
       }
       return row;
     });
